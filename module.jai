@@ -43,6 +43,7 @@ get_line_type :: (line: string) -> Obj_Line_Type {
 
 Obj_Object :: struct {
     faces : [..] Obj_Face;
+    name : string;
 }
 
 Obj_Face :: struct {
@@ -96,8 +97,10 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
                 array_add(*obj_data.all_normals, vec);
 
             case .OBJECT;
+                obj_name := trim(advance(line, 2));  // skip "o "
                 array_add(*obj_data.all_objects, .{});
                 current_object = *obj_data.all_objects[obj_data.all_objects.count - 1];
+                current_object.name = copy_string(obj_name);  // copy since file_contents gets freed
 
             case .FACE;
                 // create default object if none exists yet, this allows obj files that have no
