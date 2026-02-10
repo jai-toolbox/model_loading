@@ -3,6 +3,9 @@
 #import "Basic";
 #import "String";
 
+#load "map.jai";
+
+
 Obj_Line_Type :: enum {
     UNKNOWN;
     VERTEX;
@@ -230,3 +233,4 @@ parse_face_vertex :: (s: string) -> Obj_Face_Vertex {
     
     return fv;
 }
+
