@@ -1,6 +1,7 @@
 #import "Basic";
 #import "Math";
 #import "Hash_Table";
+#import "String";
 
 #import "tbx/math";
 #import "tbx/geometry";
@@ -338,13 +339,6 @@ skip_to_newline :: (parser: *Parser) {
     if parser.pos < parser.data.count {
         parser.pos += 1;
     }
-}
-
-slice :: (s: string, start: int, count: int) -> string {
-    result: string;
-    result.data = s.data + start;
-    result.count = count;
-    return result;
 }
 
 SKIN_WIDTH :: 0.0001;
