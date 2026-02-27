@@ -4,7 +4,7 @@
 #import "String";
 
 #load "map.jai";
-
+#load "gltf.jai";
 #load "obj.jai";
 #load "mtl.jai";
 
