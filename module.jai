@@ -7,6 +7,9 @@
 
 #load "obj.jai";
 #load "mtl.jai";
+#load "gltf.jai";
+
+// todo move the the below stuff into wavefront.jai and then load obj and mtl in there
 
 Wavefront_Model :: struct {
     obj_data : Obj_Data;
@@ -56,3 +59,20 @@ resolve_texture_path :: (model: *Wavefront_Model, relative_path: string) -> stri
     return tprint("%1%2", model.directory, relative_path);
 }
 
+save_wavefront_model :: (base_path: string, model: *Wavefront_Model) {
+    obj_path := tprint("%.obj", base_path);
+    mtl_path := tprint("%.mtl", base_path);
+
+    // extract just the filename for the mtllib reference in the obj file
+    // e.g. "/data/cube" -> "cube.mtl"
+    mtl_filename: string;
+    last_slash := find_index_from_right(base_path, #char "/");
+    if last_slash >= 0 {
+        mtl_filename = tprint("%.mtl", advance(base_path, last_slash + 1));
+    } else {
+        mtl_filename = tprint("%.mtl", base_path);
+    }
+
+    save_obj(obj_path, *model.obj_data, mtl_filename);
+    save_mtl(mtl_path, *model.mtl_data);
+}

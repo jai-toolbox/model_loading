@@ -332,3 +332,87 @@ find_material_by_name :: (mtl_data: *Mtl_Data, name: string) -> *Mtl_Material {
     }
     return null;
 }
+
+save_mtl :: (path_to_mtl_file: string, mtl_data: *Mtl_Data) {
+    builder: String_Builder;
+    defer free_buffers(*builder);
+
+    for mat_index: 0..mtl_data.all_materials.count - 1 {
+        mat := *mtl_data.all_materials[mat_index];
+
+        if mat_index > 0 {
+            print_to_builder(*builder, "\n");
+        }
+
+        print_to_builder(*builder, "newmtl %\n", mat.name);
+
+        // colors
+        if mat.has_ambient_color {
+            print_to_builder(*builder, "Ka % % %\n", mat.ambient_color.x, mat.ambient_color.y, mat.ambient_color.z);
+        }
+        if mat.has_diffuse_color {
+            print_to_builder(*builder, "Kd % % %\n", mat.diffuse_color.x, mat.diffuse_color.y, mat.diffuse_color.z);
+        }
+        if mat.has_specular_color {
+            print_to_builder(*builder, "Ks % % %\n", mat.specular_color.x, mat.specular_color.y, mat.specular_color.z);
+        }
+        if mat.has_emissive_color {
+            print_to_builder(*builder, "Ke % % %\n", mat.emissive_color.x, mat.emissive_color.y, mat.emissive_color.z);
+        }
+        if mat.has_transmission_filter {
+            print_to_builder(*builder, "Tf % % %\n", mat.transmission_filter.x, mat.transmission_filter.y, mat.transmission_filter.z);
+        }
+
+        // scalar properties
+        if mat.has_specular_exponent {
+            print_to_builder(*builder, "Ns %\n", mat.specular_exponent);
+        }
+        if mat.has_index_of_refraction {
+            print_to_builder(*builder, "Ni %\n", mat.index_of_refraction);
+        }
+        if mat.has_dissolve {
+            print_to_builder(*builder, "d %\n", mat.dissolve);
+        }
+        if mat.has_illumination_model {
+            print_to_builder(*builder, "illum %\n", mat.illumination_model);
+        }
+
+        // texture maps
+        if mat.map_ambient.count > 0 {
+            print_to_builder(*builder, "map_Ka %\n", mat.map_ambient);
+        }
+        if mat.map_diffuse.count > 0 {
+            print_to_builder(*builder, "map_Kd %\n", mat.map_diffuse);
+        }
+        if mat.map_specular.count > 0 {
+            print_to_builder(*builder, "map_Ks %\n", mat.map_specular);
+        }
+        if mat.map_emissive.count > 0 {
+            print_to_builder(*builder, "map_Ke %\n", mat.map_emissive);
+        }
+        if mat.map_specular_exponent.count > 0 {
+            print_to_builder(*builder, "map_Ns %\n", mat.map_specular_exponent);
+        }
+        if mat.map_dissolve.count > 0 {
+            print_to_builder(*builder, "map_d %\n", mat.map_dissolve);
+        }
+        if mat.map_bump.count > 0 {
+            print_to_builder(*builder, "map_bump %\n", mat.map_bump);
+        }
+        if mat.map_displacement.count > 0 {
+            print_to_builder(*builder, "disp %\n", mat.map_displacement);
+        }
+        if mat.map_decal.count > 0 {
+            print_to_builder(*builder, "decal %\n", mat.map_decal);
+        }
+        if mat.map_reflection.count > 0 {
+            print_to_builder(*builder, "refl %\n", mat.map_reflection);
+        }
+    }
+
+    result := builder_to_string(*builder);
+    defer free(result);
+
+    success := write_entire_file(path_to_mtl_file, result);
+    assert(success, "couldn't write the mtl file");
+}

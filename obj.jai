@@ -245,3 +245,84 @@ parse_face_vertex :: (s: string) -> Obj_Face_Vertex {
     return fv;
 }
 
+save_obj :: (path_to_obj_file: string, obj_data: *Obj_Data, mtl_filename: string = "") {
+    builder: String_Builder;
+    defer free_buffers(*builder);
+
+    // if we have a material file, write the mtllib reference
+    if mtl_filename.count > 0 {
+        print_to_builder(*builder, "mtllib %\n", mtl_filename);
+    }
+
+    // write all positions
+    for obj_data.all_positions {
+        print_to_builder(*builder, "v % % %\n", it.x, it.y, it.z);
+    }
+
+    // write all texture coordinates
+    for obj_data.all_texture_coordinates {
+        print_to_builder(*builder, "vt % %\n", it.x, it.y);
+    }
+
+    // write all normals
+    for obj_data.all_normals {
+        print_to_builder(*builder, "vn % % %\n", it.x, it.y, it.z);
+    }
+
+    // write objects and their faces
+    for * obj : obj_data.all_objects {
+        if obj.name.count > 0 {
+            print_to_builder(*builder, "o %\n", obj.name);
+        }
+
+        current_material_name: string;
+
+        for * face : obj.faces {
+            // emit usemtl if the material changed
+            if face.material_name.count > 0 && face.material_name != current_material_name {
+                print_to_builder(*builder, "usemtl %\n", face.material_name);
+                current_material_name = face.material_name;
+            }
+
+            print_to_builder(*builder, "f");
+
+            for * fv : face.face_vertices {
+                print_to_builder(*builder, " ");
+                write_face_vertex(*builder, fv);
+            }
+
+            print_to_builder(*builder, "\n");
+        }
+    }
+
+    result := builder_to_string(*builder);
+    defer free(result);
+
+    success := write_entire_file(path_to_obj_file, result);
+    assert(success, "couldn't write the obj file");
+}
+
+#scope_file
+
+write_face_vertex :: (builder: *String_Builder, fv: *Obj_Face_Vertex) {
+    // OBJ indices are 1-based, our internal storage is 0-based
+    has_pos  := fv.position_index >= 0;
+    has_tex  := fv.texture_coordinate_index >= 0;
+    has_norm := fv.normal_index >= 0;
+
+    if has_pos && has_tex && has_norm {
+        // v/vt/vn
+        print_to_builder(builder, "%/%/%", fv.position_index + 1, fv.texture_coordinate_index + 1, fv.normal_index + 1);
+    } else if has_pos && !has_tex && has_norm {
+        // v//vn
+        print_to_builder(builder, "%//%", fv.position_index + 1, fv.normal_index + 1);
+    } else if has_pos && has_tex && !has_norm {
+        // v/vt
+        print_to_builder(builder, "%/%", fv.position_index + 1, fv.texture_coordinate_index + 1);
+    } else if has_pos {
+        // v
+        print_to_builder(builder, "%", fv.position_index + 1);
+    }
+}
+
+#scope_export
