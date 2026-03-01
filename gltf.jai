@@ -22,9 +22,11 @@ The basic structure:
 
 We support:
   - External .bin buffer files
-  - Meshes with POSITION, NORMAL, TEXCOORD_0 attributes
+  - Meshes with POSITION, NORMAL, TEXCOORD_0..N attributes
+  - Multiple UV channels (TEXCOORD_0, TEXCOORD_1, TEXCOORD_2, ...)
   - Indexed and non-indexed geometry
   - PBR metallic-roughness materials (base color, metallic, roughness, emissive, normal map)
+  - Texture info texcoord index selects which UV channel to use
   - Node hierarchy with TRS transforms and matrix transforms
   - Multiple scenes
 
@@ -32,10 +34,9 @@ We do NOT support (yet):
   - .glb binary container format
   - Data URIs (embedded base64 buffers/images)
   - Morph targets
-  - Skinning / animations
+  - Skinning / animations (want this soon)
   - Extensions
   - Sparse accessors
-  - Multiple texture coordinates (TEXCOORD_1, etc.)
   - Vertex colors
 
 */
@@ -120,11 +121,14 @@ Gltf_Accessor :: struct {
     normalized        : bool;
 }
 
+MAX_TEXCOORD_CHANNELS :: 8;  // glTF spec doesn't define a hard limit; 8 is generous
+
 Gltf_Primitive :: struct {
     position_accessor   : int = -1;
     normal_accessor     : int = -1;
-    texcoord_0_accessor : int = -1;
     tangent_accessor    : int = -1;
+
+    texcoord_accessors  : [..] int;   // indexed by channel: [0] = TEXCOORD_0, [1] = TEXCOORD_1, ...
 
     indices_accessor    : int = -1;
     material_index      : int = -1;
@@ -136,20 +140,23 @@ Gltf_Mesh :: struct {
     primitives : [..] Gltf_Primitive;
 }
 
+// so our struct names mirror what's in the file but it might be better to not do that and be explict, but then you have to know the mapping 
+// from the custom name to the thing in the file, but I don't think there's a problem with that, because the code becomes easier to understand.
+
 Gltf_Texture_Info :: struct {
     texture_index : int = -1;
-    texcoord      : int;
+    texcoord      : int;        // which TEXCOORD_n channel to use
 }
 
 Gltf_Normal_Texture_Info :: struct {
     texture_index : int = -1;
-    texcoord      : int;
+    texcoord      : int;        // which TEXCOORD_n channel to use
     scale         : float = 1.0;
 }
 
 Gltf_Occlusion_Texture_Info :: struct {
     texture_index : int = -1;
-    texcoord      : int;
+    texcoord      : int;        // which TEXCOORD_n channel to use
     strength      : float = 1.0;
 }
 
@@ -231,7 +238,7 @@ Gltf_Data :: struct {
     directory         : string;
 }
 
-// Loading
+// loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     file_contents, success := read_entire_file(path_to_gltf_file);
@@ -283,8 +290,8 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
 
 #scope_file
 
-// Helper to read a number from a bare Json_Value (e.g. an array element).
-// The library's typed getters like json_get_number() work on object+key pairs,
+// helper to read a number from a bare json_value (e.g. an array element).
+// the library's typed getters like json_get_number() work on object+key pairs,
 // so for raw values from json_array_get() we access .number directly.
 json_value_as_float :: (val: *Json_Value) -> float {
     if val == null return 0;
@@ -379,27 +386,38 @@ parse_meshes :: (gltf: *Gltf_Data, root: *Json_Value) {
                 attrs := json_get_object(prim_json, "attributes");
                 if attrs {
                     pos_val := json_get(attrs, "POSITION");
-                    if pos_val && json_is_number(pos_val)  then prim.position_accessor   = json_get_int(attrs, "POSITION");
+                    if pos_val && json_is_number(pos_val)  then prim.position_accessor = json_get_int(attrs, "POSITION");
 
                     norm_val := json_get(attrs, "NORMAL");
-                    if norm_val && json_is_number(norm_val) then prim.normal_accessor     = json_get_int(attrs, "NORMAL");
-
-                    tex_val := json_get(attrs, "TEXCOORD_0");
-                    if tex_val && json_is_number(tex_val)  then prim.texcoord_0_accessor = json_get_int(attrs, "TEXCOORD_0");
+                    if norm_val && json_is_number(norm_val) then prim.normal_accessor = json_get_int(attrs, "NORMAL");
 
                     tan_val := json_get(attrs, "TANGENT");
-                    if tan_val && json_is_number(tan_val)  then prim.tangent_accessor    = json_get_int(attrs, "TANGENT");
+                    if tan_val && json_is_number(tan_val)  then prim.tangent_accessor = json_get_int(attrs, "TANGENT");
+
+                    // multi-channel UV support: scan TEXCOORD_0 through TEXCOORD_(MAX_TEXCOORD_CHANNELS-1)
+                    for tc_index: 0..MAX_TEXCOORD_CHANNELS - 1 {
+                        tc_name := tprint("TEXCOORD_%", tc_index);
+                        tc_val := json_get(attrs, tc_name);
+                        if tc_val && json_is_number(tc_val) {
+                            // Ensure the array is large enough — fill gaps with -1
+                            while prim.texcoord_accessors.count <= tc_index {
+                                array_add(*prim.texcoord_accessors, -1);
+                            }
+                            prim.texcoord_accessors[tc_index] = json_get_int(attrs, tc_name);
+                        } else {
+                            // Stop scanning if there's a gap (conservative) — or continue to allow sparse.
+                            // glTF spec says TEXCOORD sets should be contiguous starting from 0,
+                            // but we'll be lenient and keep scanning.
+                        }
+                    }
                 }
 
-                // indices
                 idx_val := json_get(prim_json, "indices");
                 if idx_val && json_is_number(idx_val) then prim.indices_accessor = json_get_int(prim_json, "indices");
 
-                // material
                 mat_val := json_get(prim_json, "material");
                 if mat_val && json_is_number(mat_val) then prim.material_index = json_get_int(prim_json, "material");
 
-                // mode
                 mode_val := json_get(prim_json, "mode");
                 if mode_val && json_is_number(mode_val) {
                     prim.mode = cast(Gltf_Primitive_Mode) cast(u32) json_get_int(prim_json, "mode");
@@ -660,7 +678,7 @@ load_buffer_data :: (gltf: *Gltf_Data) {
 #scope_export
 
 // data access helpers
-//
+
 // these let you pull actual vertex data out of the binary buffers
 // using the accessor/bufferview indirection that gltf uses.
 
@@ -853,4 +871,39 @@ get_default_scene :: (gltf: *Gltf_Data) -> *Gltf_Scene {
     }
     if gltf.all_scenes.count > 0 return *gltf.all_scenes[0];
     return null;
+}
+
+// multi-channel uv helpers
+
+// returns the number of uv channels available on this primitive
+get_texcoord_channel_count :: (prim: *Gltf_Primitive) -> int {
+    return prim.texcoord_accessors.count;
+}
+
+// returns the accessor index for a given uv channel, or -1 if not present.
+get_texcoord_accessor :: (prim: *Gltf_Primitive, channel: int) -> int {
+    if channel < 0 || channel >= prim.texcoord_accessors.count return -1;
+    return prim.texcoord_accessors[channel];
+}
+
+// reads uv data for a specific channel from a primitive.
+// this is the primary way to get texture coordinates when you have multi-channel uvs.
+read_primitive_texcoords :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, channel: int = 0) -> [..] Vector2 {
+    accessor_index := get_texcoord_accessor(prim, channel);
+    return read_accessor_as_vector2_array(gltf, accessor_index);
+}
+
+// given a texture info (which contains a texcoord channel index), reads the
+// appropriate uv channel from the primitive. this is useful when rendering:
+// each texture reference in a material specifies which uv channel it wants.
+read_texcoords_for_texture_info :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, tex_info: Gltf_Texture_Info) -> [..] Vector2 {
+    return read_primitive_texcoords(gltf, prim, tex_info.texcoord);
+}
+
+read_texcoords_for_normal_texture :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, tex_info: Gltf_Normal_Texture_Info) -> [..] Vector2 {
+    return read_primitive_texcoords(gltf, prim, tex_info.texcoord);
+}
+
+read_texcoords_for_occlusion_texture :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, tex_info: Gltf_Occlusion_Texture_Info) -> [..] Vector2 {
+    return read_primitive_texcoords(gltf, prim, tex_info.texcoord);
 }
