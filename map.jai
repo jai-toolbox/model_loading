@@ -16,6 +16,8 @@
 // I decided to keep the relevant collision detection in here just for simplicity but 
 // it's not really part of the map loading, but until we use this code again it's fine to keep it together.
 
+#scope_file
+
 Brush :: struct {
     planes: [..] Plane;
 }
@@ -25,6 +27,8 @@ Entity :: struct {
     properties: Table(string, string);
     brushes: [..] Brush;
 }
+
+#scope_module
 
 Map :: struct {
     entities: [..] Entity;
