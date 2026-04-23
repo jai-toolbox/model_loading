@@ -43,6 +43,12 @@ Obj_Object :: struct {
     name : string;
 }
 
+deinit :: (using obj_object : *Obj_Object) {
+    for *faces deinit(it);
+    array_free(faces);
+    free(name);
+}
+
 Obj_Face :: struct {
     face_vertices : [..] Obj_Face_Vertex;
 
@@ -61,6 +67,11 @@ Obj_Face :: struct {
     material_name : string; 
 }
 
+deinit :: (using obj_face : *Obj_Face) {
+    array_free(face_vertices);
+    free(material_name);
+}
+
 Obj_Face_Vertex :: struct {
     position_index := -1;
     texture_coordinate_index := -1;
@@ -76,6 +87,7 @@ Obj_Data :: struct {
     all_objects : [..] Obj_Object;
 }
 
+// this is just init right, no, it's more like create
 load_obj :: (path_to_obj_file: string) -> Obj_Data {
     file_contents, success := read_entire_file(path_to_obj_file);
     assert(success, "couldn't open the file");
@@ -136,6 +148,16 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
     }
 
     return obj_data;
+}
+
+deinit :: (using obj_data : *Obj_Data) {
+    array_free(all_positions);
+    array_free(all_texture_coordinates);
+    array_free(all_normals);
+    for *all_objects {
+        deinit(it);
+    }
+    array_free(all_objects);
 }
 
 // helper functions used in the above.
