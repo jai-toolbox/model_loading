@@ -616,7 +616,7 @@ map_to_mesh_deduplicated :: (map: *Map) -> Indexed_Triangle_Positions {
         
         existing := table_find_pointer(vertex_map, hash);
         if existing {
-            return <<existing;
+            return existing.*;
         }
         
         new_index := cast(u32) mesh.positions.count;
