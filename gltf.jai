@@ -241,9 +241,8 @@ Gltf_Data :: struct {
 // loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
-    file_contents, success := read_entire_file(path_to_gltf_file);
+    success, file_contents := load_asset(path_to_gltf_file);
     assert(success, "couldn't open the gltf file");
-    defer free(file_contents);
 
     gltf_data: Gltf_Data;
 
@@ -669,7 +668,7 @@ load_buffer_data :: (gltf: *Gltf_Data) {
         }
 
         full_path := tprint("%1%2", gltf.directory, buf.uri);
-        data, success := read_entire_file(full_path);
+        success, data := load_asset_copy(full_path);
         assert(success, "couldn't load glTF buffer file");
         buf.loaded_data = data;
     }

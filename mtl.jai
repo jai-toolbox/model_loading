@@ -170,9 +170,8 @@ Mtl_Data :: struct {
 }
 
 load_mtl :: (path_to_mtl_file: string) -> Mtl_Data {
-    file_contents, success := read_entire_file(path_to_mtl_file);
+    success, file_contents := load_asset(path_to_mtl_file);
     assert(success, "couldn't open the mtl file");
-    defer free(file_contents);
 
     mtl_data: Mtl_Data;
     current_material: *Mtl_Material = null;

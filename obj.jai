@@ -89,9 +89,8 @@ Obj_Data :: struct {
 
 // this is just init right, no, it's more like create
 load_obj :: (path_to_obj_file: string) -> Obj_Data {
-    file_contents, success := read_entire_file(path_to_obj_file);
+    success, file_contents := load_asset(path_to_obj_file);
     assert(success, "couldn't open the file");
-    defer free(file_contents);
 
     obj_data: Obj_Data;
     current_object: *Obj_Object = null;
