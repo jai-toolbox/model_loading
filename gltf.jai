@@ -97,6 +97,12 @@ Gltf_Alpha_Mode :: enum {
     BLEND;
 }
 
+Gltf_Light_Type :: enum {
+    POINT;
+    SPOT;
+    DIRECTIONAL;
+}
+
 // data structures
 
 Gltf_Buffer :: struct {
@@ -206,6 +212,7 @@ Gltf_Sampler :: struct {
 Gltf_Node :: struct {
     name          : string;
     mesh_index    : int = -1;
+    light_index   : int = -1;
     children      : [..] int;
 
     translation   : Vector3 = .{0, 0, 0};
@@ -214,6 +221,16 @@ Gltf_Node :: struct {
 
     has_matrix    : bool;
     matrix        : Matrix4;
+}
+
+Gltf_Light :: struct {
+    name       : string;
+    light_type : Gltf_Light_Type = .POINT;
+    color      : Vector3 = .{1, 1, 1};
+    intensity  : float = 1.0;
+    range      : float = 0.0;
+    inner_cone_angle : float = 0.0;
+    outer_cone_angle : float = 0.78539819;
 }
 
 Gltf_Scene :: struct {
@@ -227,6 +244,7 @@ Gltf_Data :: struct {
     all_accessors     : [..] Gltf_Accessor;
     all_meshes        : [..] Gltf_Mesh;
     all_materials     : [..] Gltf_Material;
+    all_lights        : [..] Gltf_Light;
     all_textures      : [..] Gltf_Texture;
     all_images        : [..] Gltf_Image;
     all_samplers      : [..] Gltf_Sampler;
@@ -269,6 +287,7 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     parse_samplers(*gltf_data, root);
     parse_textures(*gltf_data, root);
     parse_materials(*gltf_data, root);
+    parse_lights(*gltf_data, root);
     parse_meshes(*gltf_data, root);
     parse_nodes(*gltf_data, root);
     parse_scenes(*gltf_data, root);
@@ -300,6 +319,46 @@ json_value_as_float :: (val: *Json_Value) -> float {
 json_value_as_int :: (val: *Json_Value) -> int {
     if val == null return 0;
     return cast(int) val.number;
+}
+
+parse_lights :: (gltf: *Gltf_Data, root: *Json_Value) {
+    extensions := json_get_object(root, "extensions");
+    if extensions == null return;
+
+    punctual := json_get_object(extensions, "KHR_lights_punctual");
+    if punctual == null return;
+
+    lights_arr := json_get_array(punctual, "lights");
+    if lights_arr == null return;
+
+    for i: 0..json_array_count(lights_arr) - 1 {
+        light_json := json_array_get(lights_arr, i);
+        light: Gltf_Light;
+        light.name = copy_string(json_get_string(light_json, "name"));
+
+        type_str := json_get_string(light_json, "type", "point");
+        if type_str == "directional" light.light_type = .DIRECTIONAL;
+        else if type_str == "spot"  light.light_type = .SPOT;
+        else                         light.light_type = .POINT;
+
+        color_arr := json_get_array(light_json, "color");
+        if color_arr && json_array_count(color_arr) >= 3 {
+            light.color.x = json_value_as_float(json_array_get(color_arr, 0));
+            light.color.y = json_value_as_float(json_array_get(color_arr, 1));
+            light.color.z = json_value_as_float(json_array_get(color_arr, 2));
+        }
+
+        light.intensity = cast(float) json_get_number(light_json, "intensity", 1.0);
+        light.range = cast(float) json_get_number(light_json, "range", 0.0);
+
+        spot_json := json_get_object(light_json, "spot");
+        if spot_json {
+            light.inner_cone_angle = cast(float) json_get_number(spot_json, "innerConeAngle", 0.0);
+            light.outer_cone_angle = cast(float) json_get_number(spot_json, "outerConeAngle", 0.78539816339);
+        }
+
+        array_add(*gltf.all_lights, light);
+    }
 }
 
 parse_buffers :: (gltf: *Gltf_Data, root: *Json_Value) {
@@ -576,6 +635,15 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
 
         mesh_val := json_get(node_json, "mesh");
         if mesh_val && json_is_number(mesh_val) then node.mesh_index = json_get_int(node_json, "mesh");
+
+        extensions := json_get_object(node_json, "extensions");
+        if extensions {
+            punctual := json_get_object(extensions, "KHR_lights_punctual");
+            if punctual {
+                light_val := json_get(punctual, "light");
+                if light_val && json_is_number(light_val) then node.light_index = json_get_int(punctual, "light");
+            }
+        }
 
         // children
         children_arr := json_get_array(node_json, "children");
