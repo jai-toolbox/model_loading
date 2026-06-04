@@ -95,6 +95,7 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
     obj_data: Obj_Data;
     current_object: *Obj_Object = null;
     current_material_name: string;  
+    defer free(current_material_name);
 
     remainder := file_contents;
     while remainder.count > 0 {
@@ -126,6 +127,7 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
                 current_object.name = copy_string(obj_name);
 
             case .USE_MATERIAL; 
+                free(current_material_name);
                 current_material_name = copy_string(trim(advance(line, 7)));  // skip "usemtl "
 
             case .FACE;
@@ -135,7 +137,9 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
                 }
                 
                 face := parse_face(advance(line, 2));
-                face.material_name = current_material_name;  // stamp each face with the currently set material.
+                if current_material_name.count > 0 {
+                    face.material_name = copy_string(current_material_name);  // stamp each face with the currently set material.
+                }
                 array_add(*current_object.faces, face);
 
             case .COMMENT;
