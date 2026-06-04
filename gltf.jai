@@ -92,9 +92,9 @@ Gltf_Texture_Filter :: enum u32 {
 }
 
 Gltf_Alpha_Mode :: enum {
-    OPAQUE;
-    MASK;
-    BLEND;
+    OPAQUE; // ignore alpha, surface is fully solid
+    MASK;   // binary transparency, pixel value is either full opaque or full solid (eg grass)
+    BLEND;  // continuous transparncy, pixel values need to blend with what's behind them
 }
 
 Gltf_Light_Type :: enum {
@@ -105,10 +105,17 @@ Gltf_Light_Type :: enum {
 
 // data structures
 
+/*
+a uniform resource identifier (uri) is like a generalized file path, it can be:
+- a literal file path on your local machine
+- a url to a file
+- TODO fill this in.
+*/
+
 Gltf_Buffer :: struct {
-    uri         : string;
-    byte_length : int;
-    loaded_data : string;  // raw bytes loaded from the .bin file
+    uri         : string; // most often this points to something like model.bin or something
+    byte_length : int; // advertised_byte_length
+    loaded_data : string;  // bytes_weve_loaded, can be used to verify that you got everything.
 }
 
 Gltf_Buffer_View :: struct {
@@ -174,19 +181,35 @@ Gltf_Pbr_Metallic_Roughness :: struct {
     metallic_roughness_texture : Gltf_Texture_Info;
 }
 
+
+/*
+This information here is what gltf can express in terms of a material
+by invoking the usage of some gltf extensions. Generally this is pretty much just pbr
+but it also allows you do do glass and other things too.
+*/ 
 Gltf_Material :: struct {
     name : string;
 
+    // classic pbr:
     pbr_metallic_roughness : Gltf_Pbr_Metallic_Roughness;
-
     normal_texture    : Gltf_Normal_Texture_Info;
     occlusion_texture : Gltf_Occlusion_Texture_Info;
-    emissive_texture  : Gltf_Texture_Info;
-    emissive_factor   : Vector3 = .{0, 0, 0};
 
+    // objects that give off light
+    emissive_texture  : Gltf_Texture_Info; // a texture telling how light should be emitted from a surface
+    emissive_factor   : Vector3 = .{0, 0, 0}; // a multiplier on those light values
+
+    // objects that have tranparency
     alpha_mode   : Gltf_Alpha_Mode = .OPAQUE;
-    alpha_cutoff : float = 0.5;
-    double_sided : bool;
+    alpha_cutoff : float = 0.5; // todo rename to alpha_cutoff_for_mask
+    double_sided : bool; // when both sides of a triangle should render or only one side should
+
+    // seethrough objects such as glass and liquids
+    transmission_factor : float = 0.0; // how much light passes through a material
+    ior                 : float = 1.5; // index_of_refraction, how much light bends and how strong fresnel reflection is
+    thickness_factor    : float = 0.0; // thickness of the volume behind the surface
+    attenuation_distance: float = 1000000.0; // how far light travels through the material before being significantly absorbed.
+    attenuation_color   : Vector3 = .{1, 1, 1}; // the color 
 }
 
 Gltf_Texture :: struct {
@@ -319,6 +342,40 @@ json_value_as_float :: (val: *Json_Value) -> float {
 json_value_as_int :: (val: *Json_Value) -> int {
     if val == null return 0;
     return cast(int) val.number;
+}
+
+hex_value :: (c: u8) -> int, bool {
+    if c >= #char "0" && c <= #char "9" return cast(int)(c - #char "0"), true;
+    if c >= #char "a" && c <= #char "f" return 10 + cast(int)(c - #char "a"), true;
+    if c >= #char "A" && c <= #char "F" return 10 + cast(int)(c - #char "A"), true;
+    return 0, false;
+}
+
+decode_uri_path :: (uri: string) -> string {
+    decoded := alloc_string(uri.count);
+    out_count := 0;
+
+    i := 0;
+    while i < uri.count {
+        if uri[i] == #char "%" && i + 2 < uri.count {
+            hi, hi_ok := hex_value(uri[i + 1]);
+            lo, lo_ok := hex_value(uri[i + 2]);
+            if hi_ok && lo_ok {
+                decoded[out_count] = cast(u8)((hi << 4) | lo);
+                out_count += 1;
+                i += 3;
+                continue;
+            }
+        }
+
+        decoded[out_count] = uri[i];
+        out_count += 1;
+        i += 1;
+    }
+
+    decoded.count = out_count;
+    normalize_slashes(decoded);
+    return decoded;
 }
 
 parse_lights :: (gltf: *Gltf_Data, root: *Json_Value) {
@@ -554,6 +611,32 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         mat.alpha_cutoff = cast(float) json_get_number(mat_json, "alphaCutoff", 0.5);
         mat.double_sided = json_get_bool(mat_json, "doubleSided");
 
+        extensions := json_get_object(mat_json, "extensions");
+        if extensions {
+            transmission := json_get_object(extensions, "KHR_materials_transmission");
+            if transmission {
+                mat.transmission_factor = cast(float) json_get_number(transmission, "transmissionFactor", 0.0);
+            }
+
+            ior := json_get_object(extensions, "KHR_materials_ior");
+            if ior {
+                mat.ior = cast(float) json_get_number(ior, "ior", 1.5);
+            }
+
+            volume := json_get_object(extensions, "KHR_materials_volume");
+            if volume {
+                mat.thickness_factor = cast(float) json_get_number(volume, "thicknessFactor", 0.0);
+                mat.attenuation_distance = cast(float) json_get_number(volume, "attenuationDistance", 1000000.0);
+
+                attenuation_color := json_get_array(volume, "attenuationColor");
+                if attenuation_color && json_array_count(attenuation_color) >= 3 {
+                    mat.attenuation_color.x = json_value_as_float(json_array_get(attenuation_color, 0));
+                    mat.attenuation_color.y = json_value_as_float(json_array_get(attenuation_color, 1));
+                    mat.attenuation_color.z = json_value_as_float(json_array_get(attenuation_color, 2));
+                }
+            }
+        }
+
         array_add(*gltf.all_materials, mat);
     }
 }
@@ -735,7 +818,8 @@ load_buffer_data :: (gltf: *Gltf_Data) {
             continue;
         }
 
-        full_path := tprint("%1%2", gltf.directory, buf.uri);
+        uri_path := decode_uri_path(buf.uri);
+        full_path := tprint("%1%2", gltf.directory, uri_path);
         success, data := load_asset_copy(full_path);
         assert(success, "couldn't load glTF buffer file");
         buf.loaded_data = data;
@@ -924,7 +1008,8 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return "";
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
-    return tprint("%1%2", gltf.directory, img.uri);
+    uri_path := decode_uri_path(img.uri);
+    return tprint("%1%2", gltf.directory, uri_path);
 }
 
 get_gltf_material :: (gltf: *Gltf_Data, material_index: int) -> *Gltf_Material {
