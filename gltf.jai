@@ -279,6 +279,68 @@ Gltf_Data :: struct {
     directory         : string;
 }
 
+deinit :: (gltf: *Gltf_Data) {
+    for * gltf.all_buffers {
+        if it.uri.count > 0 free(it.uri);
+        if it.loaded_data.count > 0 free(it.loaded_data);
+    }
+    array_free(gltf.all_buffers);
+
+    array_free(gltf.all_buffer_views);
+    array_free(gltf.all_accessors);
+
+    for * mesh: gltf.all_meshes {
+        if mesh.name.count > 0 free(mesh.name);
+        for * primitive: mesh.primitives {
+            array_free(primitive.texcoord_accessors);
+        }
+        array_free(mesh.primitives);
+    }
+    array_free(gltf.all_meshes);
+
+    for * material: gltf.all_materials {
+        if material.name.count > 0 free(material.name);
+    }
+    array_free(gltf.all_materials);
+
+    for * light: gltf.all_lights {
+        if light.name.count > 0 free(light.name);
+    }
+    array_free(gltf.all_lights);
+
+    for * texture: gltf.all_textures {
+        if texture.name.count > 0 free(texture.name);
+    }
+    array_free(gltf.all_textures);
+
+    for * image: gltf.all_images {
+        if image.uri.count > 0 free(image.uri);
+        if image.mime_type.count > 0 free(image.mime_type);
+        if image.name.count > 0 free(image.name);
+    }
+    array_free(gltf.all_images);
+
+    for * sampler: gltf.all_samplers {
+        if sampler.name.count > 0 free(sampler.name);
+    }
+    array_free(gltf.all_samplers);
+
+    for * node: gltf.all_nodes {
+        if node.name.count > 0 free(node.name);
+        array_free(node.children);
+    }
+    array_free(gltf.all_nodes);
+
+    for * scene: gltf.all_scenes {
+        if scene.name.count > 0 free(scene.name);
+        array_free(scene.nodes);
+    }
+    array_free(gltf.all_scenes);
+
+    if gltf.directory.count > 0 free(gltf.directory);
+    gltf.* = .{};
+}
+
 // loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
