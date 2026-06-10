@@ -880,11 +880,12 @@ load_buffer_data :: (gltf: *Gltf_Data) {
             continue;
         }
 
-        uri_path := decode_uri_path(buf.uri);
-        full_path := tprint("%1%2", gltf.directory, uri_path);
-        success, data := load_asset_copy(full_path);
-        assert(success, "couldn't load glTF buffer file");
-        buf.loaded_data = data;
+            uri_path := decode_uri_path(buf.uri);
+            defer free(uri_path);
+            full_path := tprint("%1%2", gltf.directory, uri_path);
+            success, data := load_asset_copy(full_path);
+            assert(success, "couldn't load glTF buffer file");
+            buf.loaded_data = data;
     }
 }
 
@@ -1071,6 +1072,7 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
     uri_path := decode_uri_path(img.uri);
+    defer free(uri_path);
     return tprint("%1%2", gltf.directory, uri_path);
 }
 
