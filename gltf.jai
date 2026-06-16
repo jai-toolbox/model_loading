@@ -103,6 +103,21 @@ Gltf_Light_Type :: enum {
     DIRECTIONAL;
 }
 
+Gltf_Animation_Path :: enum {
+    TRANSLATION;
+    ROTATION;
+    SCALE;
+    WEIGHTS;  // morph targets — we won't use this yet
+}
+
+Gltf_Interpolation :: enum {
+    LINEAR;
+    STEP;
+    CUBICSPLINE;
+}
+
+
+
 // data structures
 
 /*
@@ -142,6 +157,9 @@ Gltf_Primitive :: struct {
     tangent_accessor    : int = -1;
 
     texcoord_accessors  : [..] int;   // indexed by channel: [0] = TEXCOORD_0, [1] = TEXCOORD_1, ...
+
+    joints_accessors  : [..] int;   // JOINTS_0, JOINTS_1, ...
+    weights_accessors : [..] int;   // WEIGHTS_0, WEIGHTS_1, ...
 
     indices_accessor    : int = -1;
     material_index      : int = -1;
@@ -242,6 +260,8 @@ Gltf_Node :: struct {
     rotation      : Quaternion = .{0, 0, 0, 1};
     scale         : Vector3 = .{1, 1, 1};
 
+    skin_index    : int = -1;
+
     has_matrix    : bool;
     matrix        : Matrix4;
 }
@@ -273,6 +293,8 @@ Gltf_Data :: struct {
     all_samplers      : [..] Gltf_Sampler;
     all_nodes         : [..] Gltf_Node;
     all_scenes        : [..] Gltf_Scene;
+    all_skins         : [..] Gltf_Skin;
+    all_animations    : [..] Gltf_Animation;
 
     default_scene     : int = -1;
 
@@ -293,6 +315,8 @@ deinit :: (gltf: *Gltf_Data) {
         if mesh.name.count > 0 free(mesh.name);
         for * primitive: mesh.primitives {
             array_free(primitive.texcoord_accessors);
+            array_free(primitive.joints_accessors);
+            array_free(primitive.weights_accessors);
         }
         array_free(mesh.primitives);
     }
@@ -337,8 +361,46 @@ deinit :: (gltf: *Gltf_Data) {
     }
     array_free(gltf.all_scenes);
 
+    for * skin: gltf.all_skins {
+        if skin.name.count > 0 free(skin.name);
+        array_free(skin.joints);
+    }
+    array_free(gltf.all_skins);
+
+    for * animation: gltf.all_animations {
+        if animation.name.count > 0 free(animation.name);
+        array_free(animation.samplers);
+        array_free(animation.channels);
+    }
+    array_free(gltf.all_animations);
+
     if gltf.directory.count > 0 free(gltf.directory);
     gltf.* = .{};
+}
+
+Gltf_Skin :: struct {
+    name                     : string;
+    joints                   : [..] int;    // node indices that act as bones
+    inverse_bind_matrices    : int = -1;    // accessor index for the IBMs
+    skeleton_root            : int = -1;    // node index of the skeleton root (optional)
+}
+
+Gltf_Animation_Sampler :: struct {
+    input_accessor   : int = -1;   // accessor for keyframe timestamps
+    output_accessor  : int = -1;   // accessor for keyframe values
+    interpolation    : Gltf_Interpolation = .LINEAR;
+}
+
+Gltf_Animation_Channel :: struct {
+    sampler_index : int = -1;
+    target_node   : int = -1;
+    target_path   : Gltf_Animation_Path = .TRANSLATION;
+}
+
+Gltf_Animation :: struct {
+    name     : string;
+    samplers : [..] Gltf_Animation_Sampler;
+    channels : [..] Gltf_Animation_Channel;
 }
 
 // loading
@@ -375,6 +437,8 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     parse_lights(*gltf_data, root);
     parse_meshes(*gltf_data, root);
     parse_nodes(*gltf_data, root);
+    parse_skins(*gltf_data, root);
+    parse_animations(*gltf_data, root);
     parse_scenes(*gltf_data, root);
 
     // default scene
@@ -387,6 +451,33 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     load_buffer_data(*gltf_data);
 
     return gltf_data;
+}
+
+read_gltf_skin_weights :: (
+    gltf: *Gltf_Data,
+    prim: *Gltf_Primitive,
+    out_bone_indices: *[..] [4] u32,
+    out_bone_weights: *[..] [4] float32
+) {
+    if prim.joints_accessors.count == 0 || prim.weights_accessors.count == 0 return;
+
+    // Read JOINTS_0 and WEIGHTS_0 (we support the first set for now)
+    joints_accessor := prim.joints_accessors[0];
+    weights_accessor := prim.weights_accessors[0];
+
+    joints := read_accessor_as_u32x4_array(gltf, joints_accessor);
+    weights := read_accessor_as_f32x4_array(gltf, weights_accessor);
+    defer array_free(joints);
+    defer array_free(weights);
+
+    count := min(joints.count, weights.count);
+    array_reserve(out_bone_indices, count);
+    array_reserve(out_bone_weights, count);
+
+    for i: 0..count - 1 {
+        array_add(out_bone_indices, joints[i]);
+        array_add(out_bone_weights, weights[i]);
+    }
 }
 
 // gltf section parsers
@@ -587,6 +678,29 @@ parse_meshes :: (gltf: *Gltf_Data, root: *Json_Value) {
                             // but we'll be lenient and keep scanning.
                         }
                     }
+
+                    // skinning attributes: joints_0..n and weights_0..n
+                    for jw_index: 0..3 {  // up to 4 sets
+                        joints_name := tprint("JOINTS_%", jw_index);
+                        j_val := json_get(attrs, joints_name);
+                        if j_val && json_is_number(j_val) {
+                            while prim.joints_accessors.count <= jw_index {
+                                array_add(*prim.joints_accessors, -1);
+                            }
+                            prim.joints_accessors[jw_index] = json_get_int(attrs, joints_name);
+                        }
+
+                        weights_name := tprint("WEIGHTS_%", jw_index);
+                        w_val := json_get(attrs, weights_name);
+                        if w_val && json_is_number(w_val) {
+                            while prim.weights_accessors.count <= jw_index {
+                                array_add(*prim.weights_accessors, -1);
+                            }
+                            prim.weights_accessors[jw_index] = json_get_int(attrs, weights_name);
+                        }
+                    }
+
+
                 }
 
                 idx_val := json_get(prim_json, "indices");
@@ -790,6 +904,9 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
             }
         }
 
+        skin_val := json_get(node_json, "skin");
+        if skin_val && json_is_number(skin_val) then node.skin_index = json_get_int(node_json, "skin");
+
         // children
         children_arr := json_get_array(node_json, "children");
         if children_arr {
@@ -867,6 +984,109 @@ parse_scenes :: (gltf: *Gltf_Data, root: *Json_Value) {
         array_add(*gltf.all_scenes, scene);
     }
 }
+
+parse_skins :: (gltf: *Gltf_Data, root: *Json_Value) {
+    arr := json_get_array(root, "skins");
+    if arr == null return;
+
+    for i: 0..json_array_count(arr) - 1 {
+        skin_json := json_array_get(arr, i);
+        skin: Gltf_Skin;
+        skin.name = copy_string(json_get_string(skin_json, "name"));
+
+        ibm_val := json_get(skin_json, "inverseBindMatrices");
+        if ibm_val && json_is_number(ibm_val) {
+            skin.inverse_bind_matrices = json_get_int(skin_json, "inverseBindMatrices");
+        }
+
+        skel_val := json_get(skin_json, "skeleton");
+        if skel_val && json_is_number(skel_val) {
+            skin.skeleton_root = json_get_int(skin_json, "skeleton");
+        }
+
+        joints_arr := json_get_array(skin_json, "joints");
+        if joints_arr {
+            for ji: 0..json_array_count(joints_arr) - 1 {
+                joint_val := json_array_get(joints_arr, ji);
+                if joint_val && json_is_number(joint_val) {
+                    array_add(*skin.joints, json_value_as_int(joint_val));
+                }
+            }
+        }
+
+        array_add(*gltf.all_skins, skin);
+    }
+}
+
+parse_animations :: (gltf: *Gltf_Data, root: *Json_Value) {
+    arr := json_get_array(root, "animations");
+    if arr == null return;
+
+    for i: 0..json_array_count(arr) - 1 {
+        anim_json := json_array_get(arr, i);
+        anim: Gltf_Animation;
+        anim.name = copy_string(json_get_string(anim_json, "name"));
+
+        // parse samplers
+        samplers_arr := json_get_array(anim_json, "samplers");
+        if samplers_arr {
+            for si: 0..json_array_count(samplers_arr) - 1 {
+                samp_json := json_array_get(samplers_arr, si);
+                samp: Gltf_Animation_Sampler;
+
+                input_val := json_get(samp_json, "input");
+                if input_val && json_is_number(input_val) {
+                    samp.input_accessor = json_get_int(samp_json, "input");
+                }
+
+                output_val := json_get(samp_json, "output");
+                if output_val && json_is_number(output_val) {
+                    samp.output_accessor = json_get_int(samp_json, "output");
+                }
+
+                interp_str := json_get_string(samp_json, "interpolation", "LINEAR");
+                if interp_str == "STEP"        then samp.interpolation = .STEP;
+                else if interp_str == "CUBICSPLINE" then samp.interpolation = .CUBICSPLINE;
+                else samp.interpolation = .LINEAR;
+
+                array_add(*anim.samplers, samp);
+            }
+        }
+
+        // parse channels
+        channels_arr := json_get_array(anim_json, "channels");
+        if channels_arr {
+            for ci: 0..json_array_count(channels_arr) - 1 {
+                chan_json := json_array_get(channels_arr, ci);
+                chan: Gltf_Animation_Channel;
+
+                sampler_val := json_get(chan_json, "sampler");
+                if sampler_val && json_is_number(sampler_val) {
+                    chan.sampler_index = json_get_int(chan_json, "sampler");
+                }
+
+                target_json := json_get_object(chan_json, "target");
+                if target_json {
+                    node_val := json_get(target_json, "node");
+                    if node_val && json_is_number(node_val) {
+                        chan.target_node = json_get_int(target_json, "node");
+                    }
+
+                    path_str := json_get_string(target_json, "path", "");
+                    if path_str == "translation"      then chan.target_path = .TRANSLATION;
+                    else if path_str == "rotation"    then chan.target_path = .ROTATION;
+                    else if path_str == "scale"       then chan.target_path = .SCALE;
+                    else if path_str == "weights"     then chan.target_path = .WEIGHTS;
+                }
+
+                array_add(*anim.channels, chan);
+            }
+        }
+
+        array_add(*gltf.all_animations, anim);
+    }
+}
+
 
 // binary buffer loading
 
@@ -1012,6 +1232,118 @@ read_accessor_as_vector4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..
             v.w = float_ptr[3];
         }
         array_add(*result, v);
+    }
+    return result;
+}
+
+read_accessor_as_u32x4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] [4] u32 {
+    result: [..] [4] u32;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        v: [4] u32;
+
+        if acc.component_type == {
+            case .UNSIGNED_BYTE;
+                for k: 0..3 v[k] = cast(u32) element_ptr[k];
+            case .UNSIGNED_SHORT;
+                short_ptr := cast(*u16) element_ptr;
+                for k: 0..3 v[k] = cast(u32) short_ptr[k];
+            case .UNSIGNED_INT;
+                uint_ptr := cast(*u32) element_ptr;
+                for k: 0..3 v[k] = uint_ptr[k];
+            case .FLOAT;
+                float_ptr := cast(*float) element_ptr;
+                for k: 0..3 v[k] = cast(u32) float_ptr[k];
+        }
+
+        array_add(*result, v);
+    }
+    return result;
+}
+
+read_accessor_as_f32x4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] [4] float32 {
+    result: [..] [4] float32;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        v: [4] float32;
+
+        if acc.component_type == {
+            case .FLOAT;
+                float_ptr := cast(*float) element_ptr;
+                for k: 0..3 v[k] = float_ptr[k];
+            case .UNSIGNED_BYTE;
+                // normalized: 0..255 -> 0..1
+                for k: 0..3 v[k] = cast(float32) element_ptr[k] / 255.0;
+            case .UNSIGNED_SHORT;
+                short_ptr := cast(*u16) element_ptr;
+                for k: 0..3 v[k] = cast(float32) short_ptr[k] / 65535.0;
+        }
+
+        array_add(*result, v);
+    }
+    return result;
+}
+
+read_accessor_as_matrix4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Matrix4 {
+    result: [..] Matrix4;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        mat: Matrix4;
+        if acc.component_type == .FLOAT {
+            float_ptr := cast(*float) element_ptr;
+            // glTF stores matrices in column-major order
+            for col: 0..3 {
+                for row: 0..3 {
+                    mat.coef[row][col] = float_ptr[col * 4 + row];
+                }
+            }
+        }
+        array_add(*result, mat);
+    }
+    return result;
+}
+
+read_accessor_as_quaternion_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Quaternion {
+    result: [..] Quaternion;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        q: Quaternion;
+        if acc.component_type == .FLOAT {
+            float_ptr := cast(*float) element_ptr;
+            q.x = float_ptr[0];
+            q.y = float_ptr[1];
+            q.z = float_ptr[2];
+            q.w = float_ptr[3];
+        }
+        array_add(*result, q);
     }
     return result;
 }
