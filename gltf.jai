@@ -45,6 +45,8 @@ We do NOT support (yet):
 
 #import "tbx/json";
 
+Gltf_File_Module :: #import "File";
+
 // enums
 
 Gltf_Component_Type :: enum u32 {
@@ -259,13 +261,15 @@ Gltf_Data :: struct {
 // loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
-    success, file_contents := load_asset(path_to_gltf_file);
+    success, file_contents := load_gltf_file(path_to_gltf_file);
     assert(success, "couldn't open the gltf file");
 
     gltf_data: Gltf_Data;
 
     // extract directory
-    last_slash := find_index_from_right(path_to_gltf_file, #char "/");
+    last_forward_slash := find_index_from_right(path_to_gltf_file, #char "/");
+    last_back_slash := find_index_from_right(path_to_gltf_file, #char "\\");
+    last_slash := max(last_forward_slash, last_back_slash);
     if last_slash >= 0 {
         dir: string;
         dir.data = path_to_gltf_file.data;
@@ -302,6 +306,36 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     load_buffer_data(*gltf_data);
 
     return gltf_data;
+}
+
+load_gltf_file :: (path: string) -> bool, string {
+    if gltf_path_is_absolute(path) {
+        contents, file_ok := Gltf_File_Module.read_entire_file(path);
+        if file_ok return true, contents;
+    }
+
+    success, contents := load_asset(path);
+    if success return true, contents;
+
+    return false, "";
+}
+
+load_gltf_file_copy :: (path: string) -> bool, string {
+    if gltf_path_is_absolute(path) {
+        contents, file_ok := Gltf_File_Module.read_entire_file(path);
+        if file_ok return true, contents;
+    }
+
+    success, data := load_asset_copy(path);
+    if success return true, data;
+
+    return false, "";
+}
+
+gltf_path_is_absolute :: (path: string) -> bool {
+    if path.count >= 1 && (path[0] == #char "/" || path[0] == #char "\\") return true;
+    if path.count >= 3 && path[1] == #char ":" && (path[2] == #char "/" || path[2] == #char "\\") return true;
+    return false;
 }
 
 // gltf section parsers
@@ -735,8 +769,11 @@ load_buffer_data :: (gltf: *Gltf_Data) {
             continue;
         }
 
-        full_path := tprint("%1%2", gltf.directory, buf.uri);
-        success, data := load_asset_copy(full_path);
+        full_path := buf.uri;
+        if !gltf_path_is_absolute(buf.uri) {
+            full_path = tprint("%1%2", gltf.directory, buf.uri);
+        }
+        success, data := load_gltf_file_copy(full_path);
         assert(success, "couldn't load glTF buffer file");
         buf.loaded_data = data;
     }
@@ -924,6 +961,9 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return "";
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
+    if begins_with(img.uri, "file:///") return slice(img.uri, 8, img.uri.count);
+    if begins_with(img.uri, "file://") return slice(img.uri, 7, img.uri.count);
+    if gltf_path_is_absolute(img.uri) return img.uri;
     return tprint("%1%2", gltf.directory, img.uri);
 }
 
