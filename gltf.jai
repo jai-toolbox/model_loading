@@ -199,6 +199,14 @@ Gltf_Pbr_Metallic_Roughness :: struct {
     metallic_roughness_texture : Gltf_Texture_Info;
 }
 
+Gltf_Specular_Glossiness :: struct {
+    diffuse_factor   : Vector4 = .{1, 1, 1, 1};
+    diffuse_texture  : Gltf_Texture_Info;
+    specular_factor  : Vector3 = .{1, 1, 1};
+    glossiness_factor: float = 1.0;
+    specular_glossiness_texture: Gltf_Texture_Info;
+}
+
 
 /*
 This information here is what gltf can express in terms of a material
@@ -210,6 +218,9 @@ Gltf_Material :: struct {
 
     // classic pbr:
     pbr_metallic_roughness : Gltf_Pbr_Metallic_Roughness;
+    uses_metallic_roughness: bool;
+    uses_specular_glossiness: bool;
+    specular_glossiness: Gltf_Specular_Glossiness;
     normal_texture    : Gltf_Normal_Texture_Info;
     occlusion_texture : Gltf_Occlusion_Texture_Info;
 
@@ -298,6 +309,7 @@ Gltf_Data :: struct {
 
     default_scene     : int = -1;
 
+    path              : string;
     directory         : string;
 }
 
@@ -374,6 +386,7 @@ deinit :: (gltf: *Gltf_Data) {
     }
     array_free(gltf.all_animations);
 
+    if gltf.path.count > 0 free(gltf.path);
     if gltf.directory.count > 0 free(gltf.directory);
     gltf.* = .{};
 }
@@ -406,16 +419,20 @@ Gltf_Animation :: struct {
 // loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
-    success, file_contents := load_asset(path_to_gltf_file);
+    normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
+    normalize_slashes(normalized_gltf_path);
+
+    success, file_contents := load_asset(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
 
     gltf_data: Gltf_Data;
+    gltf_data.path = copy_string(normalized_gltf_path);
 
     // extract directory
-    last_slash := find_index_from_right(path_to_gltf_file, #char "/");
+    last_slash := find_index_from_right(normalized_gltf_path, #char "/");
     if last_slash >= 0 {
         dir: string;
-        dir.data = path_to_gltf_file.data;
+        dir.data = normalized_gltf_path.data;
         dir.count = last_slash + 1;
         gltf_data.directory = copy_string(dir);
     } else {
@@ -529,6 +546,14 @@ decode_uri_path :: (uri: string) -> string {
     decoded.count = out_count;
     normalize_slashes(decoded);
     return decoded;
+}
+
+resolve_gltf_uri_path :: (gltf: *Gltf_Data, uri: string) -> string {
+    uri_path := decode_uri_path(uri);
+    defer free(uri_path);
+
+    if is_absolute_path(uri_path) return tprint("%", uri_path);
+    return tprint("%1%2", gltf.directory, uri_path);
 }
 
 parse_lights :: (gltf: *Gltf_Data, root: *Json_Value) {
@@ -734,6 +759,8 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         // PBR metallic roughness
         pbr := json_get_object(mat_json, "pbrMetallicRoughness");
         if pbr {
+            mat.uses_metallic_roughness = true;
+
             bcf := json_get_array(pbr, "baseColorFactor");
             if bcf && json_array_count(bcf) >= 4 {
                 mat.pbr_metallic_roughness.base_color_factor.x = json_value_as_float(json_array_get(bcf, 0));
@@ -789,6 +816,45 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
 
         extensions := json_get_object(mat_json, "extensions");
         if extensions {
+            spec_gloss := json_get_object(extensions, "KHR_materials_pbrSpecularGlossiness");
+            if spec_gloss {
+                mat.uses_specular_glossiness = true;
+
+                diffuse_factor := json_get_array(spec_gloss, "diffuseFactor");
+                if diffuse_factor && json_array_count(diffuse_factor) >= 4 {
+                    mat.specular_glossiness.diffuse_factor.x = json_value_as_float(json_array_get(diffuse_factor, 0));
+                    mat.specular_glossiness.diffuse_factor.y = json_value_as_float(json_array_get(diffuse_factor, 1));
+                    mat.specular_glossiness.diffuse_factor.z = json_value_as_float(json_array_get(diffuse_factor, 2));
+                    mat.specular_glossiness.diffuse_factor.w = json_value_as_float(json_array_get(diffuse_factor, 3));
+                }
+                mat.pbr_metallic_roughness.base_color_factor = mat.specular_glossiness.diffuse_factor;
+
+                diffuse_texture := json_get_object(spec_gloss, "diffuseTexture");
+                if diffuse_texture {
+                    mat.specular_glossiness.diffuse_texture = parse_texture_info(diffuse_texture);
+                    mat.pbr_metallic_roughness.base_color_texture = mat.specular_glossiness.diffuse_texture;
+                }
+
+                specular_factor := json_get_array(spec_gloss, "specularFactor");
+                if specular_factor && json_array_count(specular_factor) >= 3 {
+                    mat.specular_glossiness.specular_factor.x = json_value_as_float(json_array_get(specular_factor, 0));
+                    mat.specular_glossiness.specular_factor.y = json_value_as_float(json_array_get(specular_factor, 1));
+                    mat.specular_glossiness.specular_factor.z = json_value_as_float(json_array_get(specular_factor, 2));
+                }
+
+                glossiness := cast(float) json_get_number(spec_gloss, "glossinessFactor", 1.0);
+                mat.specular_glossiness.glossiness_factor = glossiness;
+                specular_glossiness_texture := json_get_object(spec_gloss, "specularGlossinessTexture");
+                if specular_glossiness_texture {
+                    mat.specular_glossiness.specular_glossiness_texture = parse_texture_info(specular_glossiness_texture);
+                }
+
+                // Compatibility path for code that only understands metallic-roughness.
+                // Specular-glossiness is handled directly by the Blinn-Phong testbed path.
+                mat.pbr_metallic_roughness.metallic_factor = 0.0;
+                mat.pbr_metallic_roughness.roughness_factor = min(max(1.0 - glossiness, 0.04), 1.0);
+            }
+
             transmission := json_get_object(extensions, "KHR_materials_transmission");
             if transmission {
                 mat.transmission_factor = cast(float) json_get_number(transmission, "transmissionFactor", 0.0);
@@ -1100,9 +1166,7 @@ load_buffer_data :: (gltf: *Gltf_Data) {
             continue;
         }
 
-            uri_path := decode_uri_path(buf.uri);
-            defer free(uri_path);
-            full_path := tprint("%1%2", gltf.directory, uri_path);
+            full_path := resolve_gltf_uri_path(gltf, buf.uri);
             success, data := load_asset_copy(full_path);
             assert(success, "couldn't load glTF buffer file");
             buf.loaded_data = data;
@@ -1403,9 +1467,7 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return "";
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
-    uri_path := decode_uri_path(img.uri);
-    defer free(uri_path);
-    return tprint("%1%2", gltf.directory, uri_path);
+    return resolve_gltf_uri_path(gltf, img.uri);
 }
 
 get_gltf_material :: (gltf: *Gltf_Data, material_index: int) -> *Gltf_Material {
