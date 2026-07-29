@@ -94,9 +94,9 @@ Gltf_Texture_Filter :: enum u32 {
 }
 
 Gltf_Alpha_Mode :: enum {
-    OPAQUE;
-    MASK;
-    BLEND;
+    OPAQUE; // ignore alpha, surface is fully solid
+    MASK;   // binary transparency, pixel value is either full opaque or full solid (eg grass)
+    BLEND;  // continuous transparncy, pixel values need to blend with what's behind them
 }
 
 Gltf_Light_Type :: enum {
@@ -105,12 +105,34 @@ Gltf_Light_Type :: enum {
     DIRECTIONAL;
 }
 
+Gltf_Animation_Path :: enum {
+    TRANSLATION;
+    ROTATION;
+    SCALE;
+    WEIGHTS;  // morph targets — we won't use this yet
+}
+
+Gltf_Interpolation :: enum {
+    LINEAR;
+    STEP;
+    CUBICSPLINE;
+}
+
+
+
 // data structures
 
+/*
+a uniform resource identifier (uri) is like a generalized file path, it can be:
+- a literal file path on your local machine
+- a url to a file
+- TODO fill this in.
+*/
+
 Gltf_Buffer :: struct {
-    uri         : string;
-    byte_length : int;
-    loaded_data : string;  // raw bytes loaded from the .bin file
+    uri         : string; // most often this points to something like model.bin or something
+    byte_length : int; // advertised_byte_length
+    loaded_data : string;  // bytes_weve_loaded, can be used to verify that you got everything.
 }
 
 Gltf_Buffer_View :: struct {
@@ -137,6 +159,9 @@ Gltf_Primitive :: struct {
     tangent_accessor    : int = -1;
 
     texcoord_accessors  : [..] int;   // indexed by channel: [0] = TEXCOORD_0, [1] = TEXCOORD_1, ...
+
+    joints_accessors  : [..] int;   // JOINTS_0, JOINTS_1, ...
+    weights_accessors : [..] int;   // WEIGHTS_0, WEIGHTS_1, ...
 
     indices_accessor    : int = -1;
     material_index      : int = -1;
@@ -176,19 +201,46 @@ Gltf_Pbr_Metallic_Roughness :: struct {
     metallic_roughness_texture : Gltf_Texture_Info;
 }
 
+Gltf_Specular_Glossiness :: struct {
+    diffuse_factor   : Vector4 = .{1, 1, 1, 1};
+    diffuse_texture  : Gltf_Texture_Info;
+    specular_factor  : Vector3 = .{1, 1, 1};
+    glossiness_factor: float = 1.0;
+    specular_glossiness_texture: Gltf_Texture_Info;
+}
+
+
+/*
+This information here is what gltf can express in terms of a material
+by invoking the usage of some gltf extensions. Generally this is pretty much just pbr
+but it also allows you do do glass and other things too.
+*/ 
 Gltf_Material :: struct {
     name : string;
 
+    // classic pbr:
     pbr_metallic_roughness : Gltf_Pbr_Metallic_Roughness;
-
+    uses_metallic_roughness: bool;
+    uses_specular_glossiness: bool;
+    specular_glossiness: Gltf_Specular_Glossiness;
     normal_texture    : Gltf_Normal_Texture_Info;
     occlusion_texture : Gltf_Occlusion_Texture_Info;
-    emissive_texture  : Gltf_Texture_Info;
-    emissive_factor   : Vector3 = .{0, 0, 0};
 
+    // objects that give off light
+    emissive_texture  : Gltf_Texture_Info; // a texture telling how light should be emitted from a surface
+    emissive_factor   : Vector3 = .{0, 0, 0}; // a multiplier on those light values
+
+    // objects that have tranparency
     alpha_mode   : Gltf_Alpha_Mode = .OPAQUE;
-    alpha_cutoff : float = 0.5;
-    double_sided : bool;
+    alpha_cutoff : float = 0.5; // todo rename to alpha_cutoff_for_mask
+    double_sided : bool; // when both sides of a triangle should render or only one side should
+
+    // seethrough objects such as glass and liquids
+    transmission_factor : float = 0.0; // how much light passes through a material
+    ior                 : float = 1.5; // index_of_refraction, how much light bends and how strong fresnel reflection is
+    thickness_factor    : float = 0.0; // thickness of the volume behind the surface
+    attenuation_distance: float = 1000000.0; // how far light travels through the material before being significantly absorbed.
+    attenuation_color   : Vector3 = .{1, 1, 1}; // the color 
 }
 
 Gltf_Texture :: struct {
@@ -221,6 +273,8 @@ Gltf_Node :: struct {
     rotation      : Quaternion = .{0, 0, 0, 1};
     scale         : Vector3 = .{1, 1, 1};
 
+    skin_index    : int = -1;
+
     has_matrix    : bool;
     matrix        : Matrix4;
 }
@@ -252,27 +306,135 @@ Gltf_Data :: struct {
     all_samplers      : [..] Gltf_Sampler;
     all_nodes         : [..] Gltf_Node;
     all_scenes        : [..] Gltf_Scene;
+    all_skins         : [..] Gltf_Skin;
+    all_animations    : [..] Gltf_Animation;
 
     default_scene     : int = -1;
 
+    path              : string;
     directory         : string;
+}
+
+deinit :: (gltf: *Gltf_Data) {
+    for * gltf.all_buffers {
+        if it.uri.count > 0 free(it.uri);
+        if it.loaded_data.count > 0 free(it.loaded_data);
+    }
+    array_free(gltf.all_buffers);
+
+    array_free(gltf.all_buffer_views);
+    array_free(gltf.all_accessors);
+
+    for * mesh: gltf.all_meshes {
+        if mesh.name.count > 0 free(mesh.name);
+        for * primitive: mesh.primitives {
+            array_free(primitive.texcoord_accessors);
+            array_free(primitive.joints_accessors);
+            array_free(primitive.weights_accessors);
+        }
+        array_free(mesh.primitives);
+    }
+    array_free(gltf.all_meshes);
+
+    for * material: gltf.all_materials {
+        if material.name.count > 0 free(material.name);
+    }
+    array_free(gltf.all_materials);
+
+    for * light: gltf.all_lights {
+        if light.name.count > 0 free(light.name);
+    }
+    array_free(gltf.all_lights);
+
+    for * texture: gltf.all_textures {
+        if texture.name.count > 0 free(texture.name);
+    }
+    array_free(gltf.all_textures);
+
+    for * image: gltf.all_images {
+        if image.uri.count > 0 free(image.uri);
+        if image.mime_type.count > 0 free(image.mime_type);
+        if image.name.count > 0 free(image.name);
+    }
+    array_free(gltf.all_images);
+
+    for * sampler: gltf.all_samplers {
+        if sampler.name.count > 0 free(sampler.name);
+    }
+    array_free(gltf.all_samplers);
+
+    for * node: gltf.all_nodes {
+        if node.name.count > 0 free(node.name);
+        array_free(node.children);
+    }
+    array_free(gltf.all_nodes);
+
+    for * scene: gltf.all_scenes {
+        if scene.name.count > 0 free(scene.name);
+        array_free(scene.nodes);
+    }
+    array_free(gltf.all_scenes);
+
+    for * skin: gltf.all_skins {
+        if skin.name.count > 0 free(skin.name);
+        array_free(skin.joints);
+    }
+    array_free(gltf.all_skins);
+
+    for * animation: gltf.all_animations {
+        if animation.name.count > 0 free(animation.name);
+        array_free(animation.samplers);
+        array_free(animation.channels);
+    }
+    array_free(gltf.all_animations);
+
+    if gltf.path.count > 0 free(gltf.path);
+    if gltf.directory.count > 0 free(gltf.directory);
+    gltf.* = .{};
+}
+
+Gltf_Skin :: struct {
+    name                     : string;
+    joints                   : [..] int;    // node indices that act as bones
+    inverse_bind_matrices    : int = -1;    // accessor index for the IBMs
+    skeleton_root            : int = -1;    // node index of the skeleton root (optional)
+}
+
+Gltf_Animation_Sampler :: struct {
+    input_accessor   : int = -1;   // accessor for keyframe timestamps
+    output_accessor  : int = -1;   // accessor for keyframe values
+    interpolation    : Gltf_Interpolation = .LINEAR;
+}
+
+Gltf_Animation_Channel :: struct {
+    sampler_index : int = -1;
+    target_node   : int = -1;
+    target_path   : Gltf_Animation_Path = .TRANSLATION;
+}
+
+Gltf_Animation :: struct {
+    name     : string;
+    samplers : [..] Gltf_Animation_Sampler;
+    channels : [..] Gltf_Animation_Channel;
 }
 
 // loading
 
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
-    success, file_contents := load_gltf_file(path_to_gltf_file);
+    normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
+    normalize_slashes(normalized_gltf_path);
+
+    success, file_contents := load_gltf_file(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
 
     gltf_data: Gltf_Data;
+    gltf_data.path = copy_string(normalized_gltf_path);
 
     // extract directory
-    last_forward_slash := find_index_from_right(path_to_gltf_file, #char "/");
-    last_back_slash := find_index_from_right(path_to_gltf_file, #char "\\");
-    last_slash := max(last_forward_slash, last_back_slash);
+    last_slash := find_index_from_right(normalized_gltf_path, #char "/");
     if last_slash >= 0 {
         dir: string;
-        dir.data = path_to_gltf_file.data;
+        dir.data = normalized_gltf_path.data;
         dir.count = last_slash + 1;
         gltf_data.directory = copy_string(dir);
     } else {
@@ -294,6 +456,8 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     parse_lights(*gltf_data, root);
     parse_meshes(*gltf_data, root);
     parse_nodes(*gltf_data, root);
+    parse_skins(*gltf_data, root);
+    parse_animations(*gltf_data, root);
     parse_scenes(*gltf_data, root);
 
     // default scene
@@ -338,6 +502,33 @@ gltf_path_is_absolute :: (path: string) -> bool {
     return false;
 }
 
+read_gltf_skin_weights :: (
+    gltf: *Gltf_Data,
+    prim: *Gltf_Primitive,
+    out_bone_indices: *[..] [4] u32,
+    out_bone_weights: *[..] [4] float32
+) {
+    if prim.joints_accessors.count == 0 || prim.weights_accessors.count == 0 return;
+
+    // Read JOINTS_0 and WEIGHTS_0 (we support the first set for now)
+    joints_accessor := prim.joints_accessors[0];
+    weights_accessor := prim.weights_accessors[0];
+
+    joints := read_accessor_as_u32x4_array(gltf, joints_accessor);
+    weights := read_accessor_as_f32x4_array(gltf, weights_accessor);
+    defer array_free(joints);
+    defer array_free(weights);
+
+    count := min(joints.count, weights.count);
+    array_reserve(out_bone_indices, count);
+    array_reserve(out_bone_weights, count);
+
+    for i: 0..count - 1 {
+        array_add(out_bone_indices, joints[i]);
+        array_add(out_bone_weights, weights[i]);
+    }
+}
+
 // gltf section parsers
 
 #scope_file
@@ -353,6 +544,48 @@ json_value_as_float :: (val: *Json_Value) -> float {
 json_value_as_int :: (val: *Json_Value) -> int {
     if val == null return 0;
     return cast(int) val.number;
+}
+
+hex_value :: (c: u8) -> int, bool {
+    if c >= #char "0" && c <= #char "9" return cast(int)(c - #char "0"), true;
+    if c >= #char "a" && c <= #char "f" return 10 + cast(int)(c - #char "a"), true;
+    if c >= #char "A" && c <= #char "F" return 10 + cast(int)(c - #char "A"), true;
+    return 0, false;
+}
+
+decode_uri_path :: (uri: string) -> string {
+    decoded := alloc_string(uri.count);
+    out_count := 0;
+
+    i := 0;
+    while i < uri.count {
+        if uri[i] == #char "%" && i + 2 < uri.count {
+            hi, hi_ok := hex_value(uri[i + 1]);
+            lo, lo_ok := hex_value(uri[i + 2]);
+            if hi_ok && lo_ok {
+                decoded[out_count] = cast(u8)((hi << 4) | lo);
+                out_count += 1;
+                i += 3;
+                continue;
+            }
+        }
+
+        decoded[out_count] = uri[i];
+        out_count += 1;
+        i += 1;
+    }
+
+    decoded.count = out_count;
+    normalize_slashes(decoded);
+    return decoded;
+}
+
+resolve_gltf_uri_path :: (gltf: *Gltf_Data, uri: string) -> string {
+    uri_path := decode_uri_path(uri);
+    defer free(uri_path);
+
+    if is_absolute_path(uri_path) return tprint("%", uri_path);
+    return tprint("%1%2", gltf.directory, uri_path);
 }
 
 parse_lights :: (gltf: *Gltf_Data, root: *Json_Value) {
@@ -502,6 +735,29 @@ parse_meshes :: (gltf: *Gltf_Data, root: *Json_Value) {
                             // but we'll be lenient and keep scanning.
                         }
                     }
+
+                    // skinning attributes: joints_0..n and weights_0..n
+                    for jw_index: 0..3 {  // up to 4 sets
+                        joints_name := tprint("JOINTS_%", jw_index);
+                        j_val := json_get(attrs, joints_name);
+                        if j_val && json_is_number(j_val) {
+                            while prim.joints_accessors.count <= jw_index {
+                                array_add(*prim.joints_accessors, -1);
+                            }
+                            prim.joints_accessors[jw_index] = json_get_int(attrs, joints_name);
+                        }
+
+                        weights_name := tprint("WEIGHTS_%", jw_index);
+                        w_val := json_get(attrs, weights_name);
+                        if w_val && json_is_number(w_val) {
+                            while prim.weights_accessors.count <= jw_index {
+                                array_add(*prim.weights_accessors, -1);
+                            }
+                            prim.weights_accessors[jw_index] = json_get_int(attrs, weights_name);
+                        }
+                    }
+
+
                 }
 
                 idx_val := json_get(prim_json, "indices");
@@ -535,6 +791,8 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         // PBR metallic roughness
         pbr := json_get_object(mat_json, "pbrMetallicRoughness");
         if pbr {
+            mat.uses_metallic_roughness = true;
+
             bcf := json_get_array(pbr, "baseColorFactor");
             if bcf && json_array_count(bcf) >= 4 {
                 mat.pbr_metallic_roughness.base_color_factor.x = json_value_as_float(json_array_get(bcf, 0));
@@ -587,6 +845,71 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         if alpha_str == "BLEND"  then mat.alpha_mode = .BLEND;
         mat.alpha_cutoff = cast(float) json_get_number(mat_json, "alphaCutoff", 0.5);
         mat.double_sided = json_get_bool(mat_json, "doubleSided");
+
+        extensions := json_get_object(mat_json, "extensions");
+        if extensions {
+            spec_gloss := json_get_object(extensions, "KHR_materials_pbrSpecularGlossiness");
+            if spec_gloss {
+                mat.uses_specular_glossiness = true;
+
+                diffuse_factor := json_get_array(spec_gloss, "diffuseFactor");
+                if diffuse_factor && json_array_count(diffuse_factor) >= 4 {
+                    mat.specular_glossiness.diffuse_factor.x = json_value_as_float(json_array_get(diffuse_factor, 0));
+                    mat.specular_glossiness.diffuse_factor.y = json_value_as_float(json_array_get(diffuse_factor, 1));
+                    mat.specular_glossiness.diffuse_factor.z = json_value_as_float(json_array_get(diffuse_factor, 2));
+                    mat.specular_glossiness.diffuse_factor.w = json_value_as_float(json_array_get(diffuse_factor, 3));
+                }
+                mat.pbr_metallic_roughness.base_color_factor = mat.specular_glossiness.diffuse_factor;
+
+                diffuse_texture := json_get_object(spec_gloss, "diffuseTexture");
+                if diffuse_texture {
+                    mat.specular_glossiness.diffuse_texture = parse_texture_info(diffuse_texture);
+                    mat.pbr_metallic_roughness.base_color_texture = mat.specular_glossiness.diffuse_texture;
+                }
+
+                specular_factor := json_get_array(spec_gloss, "specularFactor");
+                if specular_factor && json_array_count(specular_factor) >= 3 {
+                    mat.specular_glossiness.specular_factor.x = json_value_as_float(json_array_get(specular_factor, 0));
+                    mat.specular_glossiness.specular_factor.y = json_value_as_float(json_array_get(specular_factor, 1));
+                    mat.specular_glossiness.specular_factor.z = json_value_as_float(json_array_get(specular_factor, 2));
+                }
+
+                glossiness := cast(float) json_get_number(spec_gloss, "glossinessFactor", 1.0);
+                mat.specular_glossiness.glossiness_factor = glossiness;
+                specular_glossiness_texture := json_get_object(spec_gloss, "specularGlossinessTexture");
+                if specular_glossiness_texture {
+                    mat.specular_glossiness.specular_glossiness_texture = parse_texture_info(specular_glossiness_texture);
+                }
+
+                // Compatibility path for code that only understands metallic-roughness.
+                // Specular-glossiness is handled directly by the Blinn-Phong testbed path.
+                mat.pbr_metallic_roughness.metallic_factor = 0.0;
+                mat.pbr_metallic_roughness.roughness_factor = min(max(1.0 - glossiness, 0.04), 1.0);
+            }
+
+            transmission := json_get_object(extensions, "KHR_materials_transmission");
+            if transmission {
+                mat.transmission_factor = cast(float) json_get_number(transmission, "transmissionFactor", 0.0);
+            }
+
+            ior := json_get_object(extensions, "KHR_materials_ior");
+            if ior {
+                mat.ior = cast(float) json_get_number(ior, "ior", 1.5);
+            }
+
+            volume := json_get_object(extensions, "KHR_materials_volume");
+            if volume {
+                mat.thickness_factor = cast(float) json_get_number(volume, "thicknessFactor", 0.0);
+                mat.attenuation_distance = cast(float) json_get_number(volume, "attenuationDistance", 1000000.0);
+
+                attenuation_color := json_get_array(volume, "attenuationColor");
+                if attenuation_color && json_array_count(attenuation_color) >= 3 {
+                    mat.attenuation_color.x = json_value_as_float(json_array_get(attenuation_color, 0));
+                    mat.attenuation_color.y = json_value_as_float(json_array_get(attenuation_color, 1));
+                    mat.attenuation_color.z = json_value_as_float(json_array_get(attenuation_color, 2));
+                }
+            }
+        }
 
         array_add(*gltf.all_materials, mat);
     }
@@ -679,6 +1002,9 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
             }
         }
 
+        skin_val := json_get(node_json, "skin");
+        if skin_val && json_is_number(skin_val) then node.skin_index = json_get_int(node_json, "skin");
+
         // children
         children_arr := json_get_array(node_json, "children");
         if children_arr {
@@ -757,6 +1083,109 @@ parse_scenes :: (gltf: *Gltf_Data, root: *Json_Value) {
     }
 }
 
+parse_skins :: (gltf: *Gltf_Data, root: *Json_Value) {
+    arr := json_get_array(root, "skins");
+    if arr == null return;
+
+    for i: 0..json_array_count(arr) - 1 {
+        skin_json := json_array_get(arr, i);
+        skin: Gltf_Skin;
+        skin.name = copy_string(json_get_string(skin_json, "name"));
+
+        ibm_val := json_get(skin_json, "inverseBindMatrices");
+        if ibm_val && json_is_number(ibm_val) {
+            skin.inverse_bind_matrices = json_get_int(skin_json, "inverseBindMatrices");
+        }
+
+        skel_val := json_get(skin_json, "skeleton");
+        if skel_val && json_is_number(skel_val) {
+            skin.skeleton_root = json_get_int(skin_json, "skeleton");
+        }
+
+        joints_arr := json_get_array(skin_json, "joints");
+        if joints_arr {
+            for ji: 0..json_array_count(joints_arr) - 1 {
+                joint_val := json_array_get(joints_arr, ji);
+                if joint_val && json_is_number(joint_val) {
+                    array_add(*skin.joints, json_value_as_int(joint_val));
+                }
+            }
+        }
+
+        array_add(*gltf.all_skins, skin);
+    }
+}
+
+parse_animations :: (gltf: *Gltf_Data, root: *Json_Value) {
+    arr := json_get_array(root, "animations");
+    if arr == null return;
+
+    for i: 0..json_array_count(arr) - 1 {
+        anim_json := json_array_get(arr, i);
+        anim: Gltf_Animation;
+        anim.name = copy_string(json_get_string(anim_json, "name"));
+
+        // parse samplers
+        samplers_arr := json_get_array(anim_json, "samplers");
+        if samplers_arr {
+            for si: 0..json_array_count(samplers_arr) - 1 {
+                samp_json := json_array_get(samplers_arr, si);
+                samp: Gltf_Animation_Sampler;
+
+                input_val := json_get(samp_json, "input");
+                if input_val && json_is_number(input_val) {
+                    samp.input_accessor = json_get_int(samp_json, "input");
+                }
+
+                output_val := json_get(samp_json, "output");
+                if output_val && json_is_number(output_val) {
+                    samp.output_accessor = json_get_int(samp_json, "output");
+                }
+
+                interp_str := json_get_string(samp_json, "interpolation", "LINEAR");
+                if interp_str == "STEP"        then samp.interpolation = .STEP;
+                else if interp_str == "CUBICSPLINE" then samp.interpolation = .CUBICSPLINE;
+                else samp.interpolation = .LINEAR;
+
+                array_add(*anim.samplers, samp);
+            }
+        }
+
+        // parse channels
+        channels_arr := json_get_array(anim_json, "channels");
+        if channels_arr {
+            for ci: 0..json_array_count(channels_arr) - 1 {
+                chan_json := json_array_get(channels_arr, ci);
+                chan: Gltf_Animation_Channel;
+
+                sampler_val := json_get(chan_json, "sampler");
+                if sampler_val && json_is_number(sampler_val) {
+                    chan.sampler_index = json_get_int(chan_json, "sampler");
+                }
+
+                target_json := json_get_object(chan_json, "target");
+                if target_json {
+                    node_val := json_get(target_json, "node");
+                    if node_val && json_is_number(node_val) {
+                        chan.target_node = json_get_int(target_json, "node");
+                    }
+
+                    path_str := json_get_string(target_json, "path", "");
+                    if path_str == "translation"      then chan.target_path = .TRANSLATION;
+                    else if path_str == "rotation"    then chan.target_path = .ROTATION;
+                    else if path_str == "scale"       then chan.target_path = .SCALE;
+                    else if path_str == "weights"     then chan.target_path = .WEIGHTS;
+                }
+
+                array_add(*anim.channels, chan);
+            }
+        }
+
+        array_add(*gltf.all_animations, anim);
+    }
+}
+
+
 // binary buffer loading
 
 load_buffer_data :: (gltf: *Gltf_Data) {
@@ -769,10 +1198,7 @@ load_buffer_data :: (gltf: *Gltf_Data) {
             continue;
         }
 
-        full_path := buf.uri;
-        if !gltf_path_is_absolute(buf.uri) {
-            full_path = tprint("%1%2", gltf.directory, buf.uri);
-        }
+        full_path := resolve_gltf_uri_path(gltf, buf.uri);
         success, data := load_gltf_file_copy(full_path);
         assert(success, "couldn't load glTF buffer file");
         buf.loaded_data = data;
@@ -906,6 +1332,118 @@ read_accessor_as_vector4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..
     return result;
 }
 
+read_accessor_as_u32x4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] [4] u32 {
+    result: [..] [4] u32;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        v: [4] u32;
+
+        if acc.component_type == {
+            case .UNSIGNED_BYTE;
+                for k: 0..3 v[k] = cast(u32) element_ptr[k];
+            case .UNSIGNED_SHORT;
+                short_ptr := cast(*u16) element_ptr;
+                for k: 0..3 v[k] = cast(u32) short_ptr[k];
+            case .UNSIGNED_INT;
+                uint_ptr := cast(*u32) element_ptr;
+                for k: 0..3 v[k] = uint_ptr[k];
+            case .FLOAT;
+                float_ptr := cast(*float) element_ptr;
+                for k: 0..3 v[k] = cast(u32) float_ptr[k];
+        }
+
+        array_add(*result, v);
+    }
+    return result;
+}
+
+read_accessor_as_f32x4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] [4] float32 {
+    result: [..] [4] float32;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        v: [4] float32;
+
+        if acc.component_type == {
+            case .FLOAT;
+                float_ptr := cast(*float) element_ptr;
+                for k: 0..3 v[k] = float_ptr[k];
+            case .UNSIGNED_BYTE;
+                // normalized: 0..255 -> 0..1
+                for k: 0..3 v[k] = cast(float32) element_ptr[k] / 255.0;
+            case .UNSIGNED_SHORT;
+                short_ptr := cast(*u16) element_ptr;
+                for k: 0..3 v[k] = cast(float32) short_ptr[k] / 65535.0;
+        }
+
+        array_add(*result, v);
+    }
+    return result;
+}
+
+read_accessor_as_matrix4_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Matrix4 {
+    result: [..] Matrix4;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        mat: Matrix4;
+        if acc.component_type == .FLOAT {
+            float_ptr := cast(*float) element_ptr;
+            // glTF stores matrices in column-major order
+            for col: 0..3 {
+                for row: 0..3 {
+                    mat.coef[row][col] = float_ptr[col * 4 + row];
+                }
+            }
+        }
+        array_add(*result, mat);
+    }
+    return result;
+}
+
+read_accessor_as_quaternion_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Quaternion {
+    result: [..] Quaternion;
+    if accessor_index < 0 return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        q: Quaternion;
+        if acc.component_type == .FLOAT {
+            float_ptr := cast(*float) element_ptr;
+            q.x = float_ptr[0];
+            q.y = float_ptr[1];
+            q.z = float_ptr[2];
+            q.w = float_ptr[3];
+        }
+        array_add(*result, q);
+    }
+    return result;
+}
+
 read_accessor_as_index_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] u32 {
     result: [..] u32;
     if accessor_index < 0 return result;
@@ -961,10 +1499,7 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return "";
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
-    if begins_with(img.uri, "file:///") return slice(img.uri, 8, img.uri.count);
-    if begins_with(img.uri, "file://") return slice(img.uri, 7, img.uri.count);
-    if gltf_path_is_absolute(img.uri) return img.uri;
-    return tprint("%1%2", gltf.directory, img.uri);
+    return resolve_gltf_uri_path(gltf, img.uri);
 }
 
 get_gltf_material :: (gltf: *Gltf_Data, material_index: int) -> *Gltf_Material {
