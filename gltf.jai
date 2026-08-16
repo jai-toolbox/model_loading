@@ -21,6 +21,7 @@ The basic structure:
   - Scenes:       Collections of root nodes
 
 We support:
+  - .glb binary container format
   - External .bin buffer files
   - Meshes with POSITION, NORMAL, TEXCOORD_0..N attributes
   - Multiple UV channels (TEXCOORD_0, TEXCOORD_1, TEXCOORD_2, ...)
@@ -31,7 +32,6 @@ We support:
   - Multiple scenes
 
 We do NOT support (yet):
-  - .glb binary container format
   - Data URIs (embedded base64 buffers/images)
   - Morph targets
   - Skinning / animations (want this soon)
@@ -253,6 +253,7 @@ Gltf_Image :: struct {
     uri       : string;
     mime_type : string;
     name      : string;
+    buffer_view_index : int = -1;
 }
 
 Gltf_Sampler :: struct {
@@ -420,12 +421,99 @@ Gltf_Animation :: struct {
 
 // loading
 
+GLB_MAGIC :: cast(u32) 0x46546c67; // ASCII "glTF", little-endian.
+GLB_VERSION_2 :: cast(u32) 2;
+GLB_CHUNK_JSON :: cast(u32) 0x4e4f534a; // ASCII "JSON", little-endian.
+GLB_CHUNK_BIN :: cast(u32) 0x004e4942;  // ASCII "BIN\0", little-endian.
+
+Gltf_Glb_Unpacked :: struct {
+    json: string;
+    bin: string;
+    is_glb: bool;
+}
+
+deinit :: (unpacked: *Gltf_Glb_Unpacked) {
+    if unpacked.json.count > 0 free(unpacked.json);
+    if unpacked.bin.count > 0 free(unpacked.bin);
+    unpacked.* = .{};
+}
+
+gltf_read_u32_le :: (data: string, offset: int, out_value: *u32) -> bool {
+    if offset < 0 || offset + 4 > data.count return false;
+    b0 := cast(u32) data.data[offset + 0];
+    b1 := cast(u32) data.data[offset + 1];
+    b2 := cast(u32) data.data[offset + 2];
+    b3 := cast(u32) data.data[offset + 3];
+    out_value.* =
+        b0 |
+        (b1 << 8) |
+        (b2 << 16) |
+        (b3 << 24);
+    return true;
+}
+
+gltf_string_slice :: (data: string, offset: int, count: int) -> string {
+    result: string;
+    if offset < 0 || count < 0 || offset + count > data.count return result;
+    result.data = data.data + offset;
+    result.count = count;
+    return result;
+}
+
+unpack_glb_file_contents :: (file_contents: string) -> Gltf_Glb_Unpacked {
+    result: Gltf_Glb_Unpacked;
+    if file_contents.count < 12 return result;
+
+    magic: u32;
+    version: u32;
+    declared_length: u32;
+    if !gltf_read_u32_le(file_contents, 0, *magic) return result;
+    if magic != GLB_MAGIC return result;
+    if !gltf_read_u32_le(file_contents, 4, *version) return result;
+    if !gltf_read_u32_le(file_contents, 8, *declared_length) return result;
+
+    assert(version == GLB_VERSION_2, "unsupported GLB version");
+    assert(cast(int) declared_length <= file_contents.count, "truncated GLB file");
+
+    result.is_glb = true;
+    offset := 12;
+    while offset + 8 <= cast(int) declared_length {
+        chunk_length: u32;
+        chunk_type: u32;
+        ok_len := gltf_read_u32_le(file_contents, offset, *chunk_length);
+        ok_type := gltf_read_u32_le(file_contents, offset + 4, *chunk_type);
+        assert(ok_len && ok_type, "invalid GLB chunk header");
+        offset += 8;
+
+        chunk_end := offset + cast(int) chunk_length;
+        assert(chunk_end <= cast(int) declared_length, "truncated GLB chunk");
+
+        chunk := gltf_string_slice(file_contents, offset, cast(int) chunk_length);
+        if chunk_type == GLB_CHUNK_JSON {
+            assert(result.json.count == 0, "GLB contains multiple JSON chunks");
+            result.json = copy_string(chunk);
+        } else if chunk_type == GLB_CHUNK_BIN {
+            assert(result.bin.count == 0, "GLB contains multiple BIN chunks");
+            result.bin = copy_string(chunk);
+        }
+
+        offset = chunk_end;
+    }
+
+    assert(result.json.count > 0, "GLB missing JSON chunk");
+    return result;
+}
+
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
     normalize_slashes(normalized_gltf_path);
 
     success, file_contents := load_gltf_file(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
+
+    unpacked := unpack_glb_file_contents(file_contents);
+    defer deinit(*unpacked);
+    json_contents := ifx unpacked.is_glb then unpacked.json else file_contents;
 
     gltf_data: Gltf_Data;
     gltf_data.path = copy_string(normalized_gltf_path);
@@ -442,7 +530,9 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     }
 
     // parse the JSON using the json library
-    root := json_parse(file_contents);
+    parse_result := json_parse_with_result(json_contents);
+    assert(parse_result.success, "couldn't parse glTF JSON: %", parse_result.error.message);
+    root := parse_result.value;
     defer json_free(root);
 
     // parse each top-level section
@@ -467,31 +557,30 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     }
 
     // load binary buffer data from external files
+    if unpacked.is_glb && unpacked.bin.count > 0 && gltf_data.all_buffers.count > 0 {
+        gltf_data.all_buffers[0].loaded_data = copy_string(unpacked.bin);
+    }
     load_buffer_data(*gltf_data);
 
     return gltf_data;
 }
 
 load_gltf_file :: (path: string) -> bool, string {
-    if gltf_path_is_absolute(path) {
-        contents, file_ok := Gltf_File_Module.read_entire_file(path);
-        if file_ok return true, contents;
-    }
+    contents, file_ok := Gltf_File_Module.read_entire_file(path);
+    if file_ok return true, contents;
 
-    success, contents := load_asset(path);
-    if success return true, contents;
+    asset_success, asset_contents := load_asset(path);
+    if asset_success return true, asset_contents;
 
     return false, "";
 }
 
 load_gltf_file_copy :: (path: string) -> bool, string {
-    if gltf_path_is_absolute(path) {
-        contents, file_ok := Gltf_File_Module.read_entire_file(path);
-        if file_ok return true, contents;
-    }
+    contents, file_ok := Gltf_File_Module.read_entire_file(path);
+    if file_ok return true, contents;
 
-    success, data := load_asset_copy(path);
-    if success return true, data;
+    asset_success, asset_data := load_asset_copy(path);
+    if asset_success return true, asset_data;
 
     return false, "";
 }
@@ -952,6 +1041,10 @@ parse_images :: (gltf: *Gltf_Data, root: *Json_Value) {
         img.uri       = copy_string(json_get_string(img_json, "uri"));
         img.mime_type = copy_string(json_get_string(img_json, "mimeType"));
         img.name      = copy_string(json_get_string(img_json, "name"));
+        buffer_view_val := json_get(img_json, "bufferView");
+        if buffer_view_val && json_is_number(buffer_view_val) {
+            img.buffer_view_index = json_get_int(img_json, "bufferView");
+        }
         array_add(*gltf.all_images, img);
     }
 }
@@ -1190,6 +1283,7 @@ parse_animations :: (gltf: *Gltf_Data, root: *Json_Value) {
 
 load_buffer_data :: (gltf: *Gltf_Data) {
     for * buf : gltf.all_buffers {
+        if buf.loaded_data.count > 0 continue;
         if buf.uri.count == 0 continue;
 
         // we don't support data URIs
@@ -1500,6 +1594,23 @@ resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     img := *gltf.all_images[tex.source_index];
     if img.uri.count == 0 return "";
     return resolve_gltf_uri_path(gltf, img.uri);
+}
+
+get_gltf_image_data_pointer :: (gltf: *Gltf_Data, texture_index: int) -> *u8, int, string {
+    if texture_index < 0 || texture_index >= gltf.all_textures.count return null, 0, "";
+    tex := *gltf.all_textures[texture_index];
+    if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return null, 0, "";
+    img := *gltf.all_images[tex.source_index];
+    if img.buffer_view_index < 0 || img.buffer_view_index >= gltf.all_buffer_views.count return null, 0, img.mime_type;
+
+    bv := *gltf.all_buffer_views[img.buffer_view_index];
+    if bv.buffer_index < 0 || bv.buffer_index >= gltf.all_buffers.count return null, 0, img.mime_type;
+
+    buf := *gltf.all_buffers[bv.buffer_index];
+    if bv.byte_offset < 0 || bv.byte_length < 0 return null, 0, img.mime_type;
+    if bv.byte_offset + bv.byte_length > buf.loaded_data.count return null, 0, img.mime_type;
+
+    return buf.loaded_data.data + bv.byte_offset, bv.byte_length, img.mime_type;
 }
 
 get_gltf_material :: (gltf: *Gltf_Data, material_index: int) -> *Gltf_Material {
