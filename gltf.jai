@@ -566,21 +566,25 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
 }
 
 load_gltf_file :: (path: string) -> bool, string {
-    contents, file_ok := Gltf_File_Module.read_entire_file(path);
-    if file_ok return true, contents;
+    if gltf_path_is_absolute(path) {
+        contents, file_ok := Gltf_File_Module.read_entire_file(path);
+        if file_ok return true, contents;
+    }
 
-    asset_success, asset_contents := load_asset(path);
-    if asset_success return true, asset_contents;
+    success, contents := load_asset(path);
+    if success return true, contents;
 
     return false, "";
 }
 
 load_gltf_file_copy :: (path: string) -> bool, string {
-    contents, file_ok := Gltf_File_Module.read_entire_file(path);
-    if file_ok return true, contents;
+    if gltf_path_is_absolute(path) {
+        contents, file_ok := Gltf_File_Module.read_entire_file(path);
+        if file_ok return true, contents;
+    }
 
-    asset_success, asset_data := load_asset_copy(path);
-    if asset_success return true, asset_data;
+    success, data := load_asset_copy(path);
+    if success return true, data;
 
     return false, "";
 }
