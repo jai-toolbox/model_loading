@@ -264,6 +264,12 @@ Gltf_Sampler :: struct {
     name       : string;
 }
 
+Gltf_Reflection_Capture_Shape :: enum u32 {
+    NONE;
+    SPHERE;
+    BOX;
+}
+
 Gltf_Node :: struct {
     name          : string;
     mesh_index    : int = -1;
@@ -273,11 +279,27 @@ Gltf_Node :: struct {
     translation   : Vector3 = .{0, 0, 0};
     rotation      : Quaternion = .{0, 0, 0, 1};
     scale         : Vector3 = .{1, 1, 1};
+    translation64 : [3] float64;
+    rotation64    : [4] float64 = float64.[0, 0, 0, 1];
+    scale64       : [3] float64 = float64.[1, 1, 1];
 
     skin_index    : int = -1;
 
     has_matrix    : bool;
     matrix        : Matrix4;
+    matrix64      : [4][4] float64;
+
+    // Reflection capture actors are carried through glTF node extras.  glTF
+    // has no standard reflection-probe extension, so Blender custom properties
+    // are the source-side equivalent of Unreal component properties.
+    reflection_capture_shape: Gltf_Reflection_Capture_Shape = .NONE;
+    reflection_capture_influence_radius: float32 = 30.0; // glTF metres
+    reflection_capture_brightness: float32 = 1.0;
+    reflection_capture_offset: Vector3;
+    reflection_capture_box_transition_distance: float32 = 1.0; // metres
+    reflection_capture_box_extent: Vector3;
+    reflection_capture_has_box_extent: bool;
+    reflection_capture_source_cubemap_angle: float32;
 }
 
 Gltf_Light :: struct {
@@ -288,6 +310,10 @@ Gltf_Light :: struct {
     range      : float = 0.0;
     inner_cone_angle : float = 0.0;
     outer_cone_angle : float = 0.78539819;
+    intensity64 : float64 = 1.0;
+    range64 : float64;
+    inner_cone_angle64 : float64;
+    outer_cone_angle64 : float64 = 0.78539816339;
 }
 
 Gltf_Scene :: struct {
@@ -312,11 +338,14 @@ Gltf_Data :: struct {
 
     default_scene     : int = -1;
 
+    generator         : string;
+
     path              : string;
     directory         : string;
 }
 
 deinit :: (gltf: *Gltf_Data) {
+    if gltf.generator.count > 0 free(gltf.generator);
     for * gltf.all_buffers {
         if it.uri.count > 0 free(it.uri);
         if it.loaded_data.count > 0 free(it.loaded_data);
@@ -508,8 +537,12 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
     normalize_slashes(normalized_gltf_path);
 
-    success, file_contents := load_gltf_file(normalized_gltf_path);
+    // Parsing only needs the source bytes for this call.  Acquire an owned
+    // copy even when the asset backend is used, then release it after the GLB
+    // chunks and external buffers have been copied into Gltf_Data.
+    success, file_contents := load_gltf_file_copy(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
+    defer if file_contents.count > 0 free(file_contents);
 
     unpacked := unpack_glb_file_contents(file_contents);
     defer deinit(*unpacked);
@@ -534,6 +567,9 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     assert(parse_result.success, "couldn't parse glTF JSON: %", parse_result.error.message);
     root := parse_result.value;
     defer json_free(root);
+
+    asset_json := json_get_object(root, "asset");
+    if asset_json gltf_data.generator = copy_string(json_get_string(asset_json, "generator"));
 
     // parse each top-level section
     parse_buffers(*gltf_data, root);
@@ -708,13 +744,17 @@ parse_lights :: (gltf: *Gltf_Data, root: *Json_Value) {
             light.color.z = json_value_as_float(json_array_get(color_arr, 2));
         }
 
-        light.intensity = cast(float) json_get_number(light_json, "intensity", 1.0);
-        light.range = cast(float) json_get_number(light_json, "range", 0.0);
+        light.intensity64 = json_get_number(light_json, "intensity", 1.0);
+        light.range64 = json_get_number(light_json, "range", 0.0);
+        light.intensity = cast(float) light.intensity64;
+        light.range = cast(float) light.range64;
 
         spot_json := json_get_object(light_json, "spot");
         if spot_json {
-            light.inner_cone_angle = cast(float) json_get_number(spot_json, "innerConeAngle", 0.0);
-            light.outer_cone_angle = cast(float) json_get_number(spot_json, "outerConeAngle", 0.78539816339);
+            light.inner_cone_angle64 = json_get_number(spot_json, "innerConeAngle", 0.0);
+            light.outer_cone_angle64 = json_get_number(spot_json, "outerConeAngle", 0.78539816339);
+            light.inner_cone_angle = cast(float) light.inner_cone_angle64;
+            light.outer_cone_angle = cast(float) light.outer_cone_angle64;
         }
 
         array_add(*gltf.all_lights, light);
@@ -1099,6 +1139,54 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
             }
         }
 
+        extras := json_get_object(node_json, "extras");
+        if extras {
+            capture_properties := json_get_object(extras, "unreal_reflection_capture");
+            if capture_properties == null capture_properties = extras;
+
+            shape_text := json_get_string(extras, "unreal_reflection_capture", "");
+            if shape_text.count == 0 shape_text = json_get_string(capture_properties, "shape", "");
+            if shape_text.count == 0 shape_text = json_get_string(capture_properties, "ReflectionCaptureShape", "");
+            if shape_text == "sphere" || shape_text == "Sphere" || shape_text == "SphereReflectionCapture" {
+                node.reflection_capture_shape = .SPHERE;
+            }
+            if shape_text == "box" || shape_text == "Box" || shape_text == "BoxReflectionCapture" {
+                node.reflection_capture_shape = .BOX;
+            }
+
+            if node.reflection_capture_shape != .NONE {
+                node.reflection_capture_influence_radius = cast(float32) json_get_number(capture_properties, "influence_radius", 30.0);
+                node.reflection_capture_influence_radius = cast(float32) json_get_number(capture_properties, "InfluenceRadius", node.reflection_capture_influence_radius);
+                node.reflection_capture_brightness = cast(float32) json_get_number(capture_properties, "brightness", 1.0);
+                node.reflection_capture_brightness = cast(float32) json_get_number(capture_properties, "Brightness", node.reflection_capture_brightness);
+                node.reflection_capture_box_transition_distance = cast(float32) json_get_number(capture_properties, "box_transition_distance", 1.0);
+                node.reflection_capture_box_transition_distance = cast(float32) json_get_number(capture_properties, "BoxTransitionDistance", node.reflection_capture_box_transition_distance);
+                node.reflection_capture_source_cubemap_angle = cast(float32) json_get_number(capture_properties, "source_cubemap_angle", 0.0);
+                node.reflection_capture_source_cubemap_angle = cast(float32) json_get_number(capture_properties, "SourceCubemapAngle", node.reflection_capture_source_cubemap_angle);
+
+                capture_offset := json_get_array(capture_properties, "capture_offset");
+                if capture_offset == null capture_offset = json_get_array(capture_properties, "CaptureOffset");
+                if capture_offset && json_array_count(capture_offset) >= 3 {
+                    node.reflection_capture_offset = .{
+                        json_value_as_float(json_array_get(capture_offset, 0)),
+                        json_value_as_float(json_array_get(capture_offset, 1)),
+                        json_value_as_float(json_array_get(capture_offset, 2))
+                    };
+                }
+
+                box_extent := json_get_array(capture_properties, "box_extent");
+                if box_extent == null box_extent = json_get_array(capture_properties, "BoxExtent");
+                if box_extent && json_array_count(box_extent) >= 3 {
+                    node.reflection_capture_box_extent = .{
+                        json_value_as_float(json_array_get(box_extent, 0)),
+                        json_value_as_float(json_array_get(box_extent, 1)),
+                        json_value_as_float(json_array_get(box_extent, 2))
+                    };
+                    node.reflection_capture_has_box_extent = true;
+                }
+            }
+        }
+
         skin_val := json_get(node_json, "skin");
         if skin_val && json_is_number(skin_val) then node.skin_index = json_get_int(node_json, "skin");
 
@@ -1122,7 +1210,8 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
                 // glTF stores column-major, which matches how we'll store it
                 col := mi / 4;
                 row := mi % 4;
-                node.matrix.coef[row][col] = json_value_as_float(val);
+                node.matrix64[row][col] = val.number;
+                node.matrix.coef[row][col] = cast(float) node.matrix64[row][col];
             }
         } else {
             node.has_matrix = false;
@@ -1130,26 +1219,22 @@ parse_nodes :: (gltf: *Gltf_Data, root: *Json_Value) {
             // translation
             t_arr := json_get_array(node_json, "translation");
             if t_arr && json_array_count(t_arr) >= 3 {
-                node.translation.x = json_value_as_float(json_array_get(t_arr, 0));
-                node.translation.y = json_value_as_float(json_array_get(t_arr, 1));
-                node.translation.z = json_value_as_float(json_array_get(t_arr, 2));
+                node.translation64 = float64.[json_array_get(t_arr, 0).number, json_array_get(t_arr, 1).number, json_array_get(t_arr, 2).number];
+                node.translation = .{cast(float) node.translation64[0], cast(float) node.translation64[1], cast(float) node.translation64[2]};
             }
 
             // rotation (quaternion xyzw)
             r_arr := json_get_array(node_json, "rotation");
             if r_arr && json_array_count(r_arr) >= 4 {
-                node.rotation.x = json_value_as_float(json_array_get(r_arr, 0));
-                node.rotation.y = json_value_as_float(json_array_get(r_arr, 1));
-                node.rotation.z = json_value_as_float(json_array_get(r_arr, 2));
-                node.rotation.w = json_value_as_float(json_array_get(r_arr, 3));
+                node.rotation64 = float64.[json_array_get(r_arr, 0).number, json_array_get(r_arr, 1).number, json_array_get(r_arr, 2).number, json_array_get(r_arr, 3).number];
+                node.rotation = .{cast(float) node.rotation64[0], cast(float) node.rotation64[1], cast(float) node.rotation64[2], cast(float) node.rotation64[3]};
             }
 
             // scale
             s_arr := json_get_array(node_json, "scale");
             if s_arr && json_array_count(s_arr) >= 3 {
-                node.scale.x = json_value_as_float(json_array_get(s_arr, 0));
-                node.scale.y = json_value_as_float(json_array_get(s_arr, 1));
-                node.scale.z = json_value_as_float(json_array_get(s_arr, 2));
+                node.scale64 = float64.[json_array_get(s_arr, 0).number, json_array_get(s_arr, 1).number, json_array_get(s_arr, 2).number];
+                node.scale = .{cast(float) node.scale64[0], cast(float) node.scale64[1], cast(float) node.scale64[2]};
             }
         }
 
