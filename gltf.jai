@@ -69,13 +69,14 @@ Gltf_Accessor_Type :: enum {
 }
 
 Gltf_Primitive_Mode :: enum u32 {
-    POINTS          :: 0;
-    LINES           :: 1;
-    LINE_LOOP       :: 2;
-    LINE_STRIP      :: 3;
-    TRIANGLES       :: 4;
-    TRIANGLE_STRIP  :: 5;
-    TRIANGLE_FAN    :: 6;
+    // vN is an entry from the index accessor, or vertex N when the primitive is not indexed.
+    POINTS          :: 0; // [v0], [v1], [v2], ...
+    LINES           :: 1; // [v0, v1], [v2, v3], ...
+    LINE_LOOP       :: 2; // [v0, v1], [v1, v2], ..., [vN, v0]
+    LINE_STRIP      :: 3; // [v0, v1], [v1, v2], [v2, v3], ...
+    TRIANGLES       :: 4; // [v0, v1, v2], [v3, v4, v5], ...
+    TRIANGLE_STRIP  :: 5; // [v0, v1, v2], [v1, v3, v2], [v2, v3, v4], ...
+    TRIANGLE_FAN    :: 6; // [v1, v2, v0], [v2, v3, v0], [v3, v4, v0], ...
 }
 
 Gltf_Texture_Wrap :: enum u32 {
@@ -154,6 +155,7 @@ Gltf_Accessor :: struct {
 MAX_TEXCOORD_CHANNELS :: 8;  // glTF spec doesn't define a hard limit; 8 is generous
 
 Gltf_Primitive :: struct {
+    // the following 3 are read with "read_accessor_as_vector3_array"
     position_accessor   : int = -1;
     normal_accessor     : int = -1;
     tangent_accessor    : int = -1;
@@ -272,8 +274,8 @@ Gltf_Reflection_Capture_Shape :: enum u32 {
 
 Gltf_Node :: struct {
     name          : string;
-    mesh_index    : int = -1;
-    light_index   : int = -1;
+    mesh_index    : int = -1; // index into all_meshes probably rename to all_mesh_index
+    light_index   : int = -1; // probably same here.
     children      : [..] int;
 
     translation   : Vector3 = .{0, 0, 0};
@@ -342,6 +344,17 @@ Gltf_Data :: struct {
 
     path              : string;
     directory         : string;
+}
+
+
+
+mesh_index_valid :: (gltf : *Gltf_Data, mesh_index : int) -> bool {
+    return mesh_index >= 0 && mesh_index < gltf.all_meshes.count;
+}
+
+get_mesh :: (gltf : *Gltf_Data, mesh_index : int) -> *Gltf_Mesh {
+    if mesh_index_valid(gltf, mesh_index) return gltf.all_meshes.data + mesh_index;
+    return null;
 }
 
 deinit :: (gltf: *Gltf_Data) {
