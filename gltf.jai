@@ -23,7 +23,7 @@ The basic structure:
 We support:
   - .glb binary container format
   - External .bin buffer files
-  - Meshes with POSITION, NORMAL, TEXCOORD_0..N attributes
+  - Meshes with POSITION, NORMAL, COLOR_0, TEXCOORD_0..N attributes
   - Multiple UV channels (TEXCOORD_0, TEXCOORD_1, TEXCOORD_2, ...)
   - Indexed and non-indexed geometry
   - PBR metallic-roughness materials (base color, metallic, roughness, emissive, normal map)
@@ -37,7 +37,6 @@ We do NOT support (yet):
   - Skinning / animations (want this soon)
   - Extensions
   - Sparse accessors
-  - Vertex colors
 
 */
 
@@ -157,6 +156,7 @@ MAX_TEXCOORD_CHANNELS :: 8;  // glTF spec doesn't define a hard limit; 8 is gene
 Gltf_Primitive :: struct {
     // the following 3 are read with "read_accessor_as_vector3_array"
     position_accessor   : int = -1;
+    color_accessor      : int = -1;
     normal_accessor     : int = -1;
     tangent_accessor    : int = -1;
 
@@ -859,6 +859,9 @@ parse_meshes :: (gltf: *Gltf_Data, root: *Json_Value) {
                     pos_val := json_get(attrs, "POSITION");
                     if pos_val && json_is_number(pos_val)  then prim.position_accessor = json_get_int(attrs, "POSITION");
 
+                    color_val := json_get(attrs, "COLOR_0");
+                    if color_val && json_is_number(color_val) then prim.color_accessor = json_get_int(attrs, "COLOR_0");
+
                     norm_val := json_get(attrs, "NORMAL");
                     if norm_val && json_is_number(norm_val) then prim.normal_accessor = json_get_int(attrs, "NORMAL");
 
@@ -1478,6 +1481,48 @@ read_accessor_as_vector3_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..
             }
         }
         array_add(*result, v);
+    }
+    return result;
+}
+
+// glTF COLOR_0 may be FLOAT, normalized UNSIGNED_BYTE, or normalized
+// UNSIGNED_SHORT, and may include an alpha component. The color renderers use
+// RGB, so alpha is deliberately ignored here.
+read_accessor_as_color3_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Vector3 {
+    result: [..] Vector3;
+    if accessor_index < 0 || accessor_index >= gltf.all_accessors.count return result;
+
+    acc := *gltf.all_accessors[accessor_index];
+    if acc.accessor_type != .VEC3 && acc.accessor_type != .VEC4 return result;
+    if acc.component_type != .FLOAT &&
+       !(acc.normalized && (acc.component_type == .UNSIGNED_BYTE || acc.component_type == .UNSIGNED_SHORT)) return result;
+
+    ptr, stride := get_accessor_data_pointer(gltf, accessor_index);
+    if ptr == null return result;
+
+    array_reserve(*result, acc.count);
+    for i: 0..acc.count - 1 {
+        element_ptr := ptr + i * stride;
+        color: Vector3;
+        if acc.component_type == .FLOAT {
+            components := cast(*float) element_ptr;
+            color = .{components[0], components[1], components[2]};
+        } else if acc.component_type == .UNSIGNED_BYTE {
+            components := cast(*u8) element_ptr;
+            color = .{
+                cast(float)components[0] / 255.0,
+                cast(float)components[1] / 255.0,
+                cast(float)components[2] / 255.0,
+            };
+        } else {
+            components := cast(*u16) element_ptr;
+            color = .{
+                cast(float)components[0] / 65535.0,
+                cast(float)components[1] / 65535.0,
+                cast(float)components[2] / 65535.0,
+            };
+        }
+        array_add(*result, color);
     }
     return result;
 }
