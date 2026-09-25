@@ -252,7 +252,9 @@ Gltf_Texture :: struct {
 }
 
 Gltf_Image :: struct {
-    uri       : string;
+    // https://www.rfc-editor.org/info/rfc3986/
+    universal_resource_identifier : string;
+    // https://www.rfc-editor.org/info/rfc2045/ page 10
     mime_type : string;
     name      : string;
     buffer_view_index : int = -1;
@@ -318,9 +320,10 @@ Gltf_Light :: struct {
     outer_cone_angle64 : float64 = 0.78539816339;
 }
 
+// A hierarchical tree of nodes
 Gltf_Scene :: struct {
     name  : string;
-    nodes : [..] int;
+    root_nodes : [..] int; // index into all_nodes
 }
 
 Gltf_Data :: struct {
@@ -395,7 +398,7 @@ deinit :: (gltf: *Gltf_Data) {
     array_free(gltf.all_textures);
 
     for * image: gltf.all_images {
-        if image.uri.count > 0 free(image.uri);
+        if image.universal_resource_identifier.count > 0 free(image.universal_resource_identifier);
         if image.mime_type.count > 0 free(image.mime_type);
         if image.name.count > 0 free(image.name);
     }
@@ -414,7 +417,7 @@ deinit :: (gltf: *Gltf_Data) {
 
     for * scene: gltf.all_scenes {
         if scene.name.count > 0 free(scene.name);
-        array_free(scene.nodes);
+        array_free(scene.root_nodes);
     }
     array_free(gltf.all_scenes);
 
@@ -688,6 +691,7 @@ json_value_as_int :: (val: *Json_Value) -> int {
     return cast(int) val.number;
 }
 
+// takes in a char, which is representing a hex value and returns the numerical value.
 hex_value :: (c: u8) -> int, bool {
     if c >= #char "0" && c <= #char "9" return cast(int)(c - #char "0"), true;
     if c >= #char "a" && c <= #char "f" return 10 + cast(int)(c - #char "a"), true;
@@ -695,6 +699,8 @@ hex_value :: (c: u8) -> int, bool {
     return 0, false;
 }
 
+// https://www.rfc-editor.org/info/rfc3986/#section-2.1
+// turns % hex hex into a numerical value
 decode_uri_path :: (uri: string) -> string {
     decoded := alloc_string(uri.count);
     out_count := 0;
@@ -705,6 +711,7 @@ decode_uri_path :: (uri: string) -> string {
             hi, hi_ok := hex_value(uri[i + 1]);
             lo, lo_ok := hex_value(uri[i + 2]);
             if hi_ok && lo_ok {
+                // here we just take the literal hex value and conver to an integer value
                 decoded[out_count] = cast(u8)((hi << 4) | lo);
                 out_count += 1;
                 i += 3;
@@ -1095,7 +1102,7 @@ parse_images :: (gltf: *Gltf_Data, root: *Json_Value) {
     for i: 0..json_array_count(arr) - 1 {
         img_json := json_array_get(arr, i);
         img: Gltf_Image;
-        img.uri       = copy_string(json_get_string(img_json, "uri"));
+        img.universal_resource_identifier       = copy_string(json_get_string(img_json, "uri"));
         img.mime_type = copy_string(json_get_string(img_json, "mimeType"));
         img.name      = copy_string(json_get_string(img_json, "name"));
         buffer_view_val := json_get(img_json, "bufferView");
@@ -1269,7 +1276,7 @@ parse_scenes :: (gltf: *Gltf_Data, root: *Json_Value) {
             for ni: 0..json_array_count(nodes_arr) - 1 {
                 node_val := json_array_get(nodes_arr, ni);
                 if node_val && json_is_number(node_val) {
-                    array_add(*scene.nodes, json_value_as_int(node_val));
+                    array_add(*scene.root_nodes, json_value_as_int(node_val));
                 }
             }
         }
@@ -1689,13 +1696,81 @@ read_accessor_as_float_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] 
 
 // convenience helpers
 
+gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
+    if node.has_matrix return node.matrix;
+
+    scale_matrix := Matrix4_Identity;
+    scale_matrix.coef[0][0] = node.scale.x;
+    scale_matrix.coef[1][1] = node.scale.y;
+    scale_matrix.coef[2][2] = node.scale.z;
+
+    translation_matrix := Matrix4_Identity;
+    translation_matrix.coef[0][3] = node.translation.x;
+    translation_matrix.coef[1][3] = node.translation.y;
+    translation_matrix.coef[2][3] = node.translation.z;
+
+    return translation_matrix * rotation_matrix(Matrix4, node.rotation) * scale_matrix;
+}
+
+// The returned arrays are indexed by glTF node index. Transforms are valid
+// only where has_world_transform is true. Note that the reason why this can be false
+// is that some nodes are part of different scenes, and our array has indices over 
+// the entire list of nodes.
+get_gltf_world_transforms_for_scene :: (
+    gltf: *Gltf_Data,
+    scene: *Gltf_Scene
+) -> [..] Matrix4, [..] bool {
+    world_transforms: [..] Matrix4;
+    array_resize(*world_transforms, gltf.all_nodes.count);
+
+    has_world_transform: [..] bool;
+    array_resize(*has_world_transform, gltf.all_nodes.count);
+
+    for root_node_index: scene.root_nodes {
+        collect_gltf_world_transforms(
+            gltf,
+            root_node_index,
+            Matrix4_Identity,
+            world_transforms,
+            has_world_transform
+        );
+    }
+
+    return world_transforms, has_world_transform;
+}
+
+collect_gltf_world_transforms :: (
+    gltf: *Gltf_Data,
+    node_index: int,
+    parent_transform_so_far: Matrix4,
+    world_transforms: [] Matrix4,
+    has_world_transform: [] bool
+) {
+    assert(node_index >= 0 && node_index < gltf.all_nodes.count);
+
+    node := *gltf.all_nodes[node_index];
+    world_transform := parent_transform_so_far * gltf_node_local_transform(node);
+    world_transforms[node_index] = world_transform;
+    has_world_transform[node_index] = true;
+
+    for child_index: node.children {
+        collect_gltf_world_transforms(
+            gltf,
+            child_index,
+            world_transform,
+            world_transforms,
+            has_world_transform
+        );
+    }
+}
+
 resolve_gltf_image_path :: (gltf: *Gltf_Data, texture_index: int) -> string {
     if texture_index < 0 || texture_index >= gltf.all_textures.count return "";
     tex := *gltf.all_textures[texture_index];
     if tex.source_index < 0 || tex.source_index >= gltf.all_images.count return "";
     img := *gltf.all_images[tex.source_index];
-    if img.uri.count == 0 return "";
-    return resolve_gltf_uri_path(gltf, img.uri);
+    if img.universal_resource_identifier.count == 0 return "";
+    return resolve_gltf_uri_path(gltf, img.universal_resource_identifier);
 }
 
 get_gltf_image_data_pointer :: (gltf: *Gltf_Data, texture_index: int) -> *u8, int, string {
