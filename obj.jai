@@ -92,6 +92,12 @@ load_obj :: (path_to_obj_file: string) -> Obj_Data {
     success, file_contents := load_asset(path_to_obj_file);
     assert(success, "couldn't open the file");
 
+    return parse_obj(file_contents);
+}
+
+// this exists because if we only took in the path, then we'd have to load the asset everytime
+// which is dumb.
+parse_obj :: (file_contents: string) -> Obj_Data {
     obj_data: Obj_Data;
     current_object: *Obj_Object = null;
     current_material_name: string;  
