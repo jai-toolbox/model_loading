@@ -162,8 +162,8 @@ Gltf_Primitive :: struct {
 
     texcoord_accessors  : [..] int;   // indexed by channel: [0] = TEXCOORD_0, [1] = TEXCOORD_1, ...
 
-    joints_accessors  : [..] int;   // JOINTS_0, JOINTS_1, ...
-    weights_accessors : [..] int;   // WEIGHTS_0, WEIGHTS_1, ...
+    joints_accessors  : [..] int;   // joint attributes: JOINTS_0, JOINTS_1, ...
+    weights_accessors : [..] int;   // weight attributes: WEIGHTS_0, WEIGHTS_1, ...
 
     indices_accessor    : int = -1;
     material_index      : int = -1;
@@ -175,24 +175,35 @@ Gltf_Mesh :: struct {
     primitives : [..] Gltf_Primitive;
 }
 
-// so our struct names mirror what's in the file but it might be better to not do that and be explict, but then you have to know the mapping 
-// from the custom name to the thing in the file, but I don't think there's a problem with that, because the code becomes easier to understand.
+/*
+so our struct names mirror what's in the file but it might be better to not do that and be explict, but then you have to know the mapping
+from the custom name to the thing in the file, but I don't think there's a problem with that, because the code becomes easier to understand.
+*/
+
+Gltf_Texture_Transform :: struct {
+    offset   : Vector2;
+    rotation : float;
+    scale    : Vector2 = .{1, 1};
+}
 
 Gltf_Texture_Info :: struct {
     texture_index : int = -1;
     texcoord      : int;        // which TEXCOORD_n channel to use
+    transform     : Gltf_Texture_Transform;
 }
 
 Gltf_Normal_Texture_Info :: struct {
     texture_index : int = -1;
     texcoord      : int;        // which TEXCOORD_n channel to use
     scale         : float = 1.0;
+    transform     : Gltf_Texture_Transform;
 }
 
 Gltf_Occlusion_Texture_Info :: struct {
     texture_index : int = -1;
     texcoord      : int;        // which TEXCOORD_n channel to use
     strength      : float = 1.0;
+    transform     : Gltf_Texture_Transform;
 }
 
 Gltf_Pbr_Metallic_Roughness :: struct {
@@ -213,7 +224,7 @@ Gltf_Specular_Glossiness :: struct {
 
 
 /*
-This information here is what gltf can express in terms of a material
+this information here is what gltf can express in terms of a material
 by invoking the usage of some gltf extensions. Generally this is pretty much just pbr
 but it also allows you do do glass and other things too.
 */ 
@@ -293,9 +304,11 @@ Gltf_Node :: struct {
     matrix        : Matrix4;
     matrix64      : [4][4] float64;
 
-    // Reflection capture actors are carried through glTF node extras.  glTF
-    // has no standard reflection-probe extension, so Blender custom properties
-    // are the source-side equivalent of Unreal component properties.
+    /*
+    reflection capture actors are carried through glTF node extras.  glTF
+    has no standard reflection-probe extension, so Blender custom properties
+    are the source-side equivalent of Unreal component properties.
+    */
     reflection_capture_shape: Gltf_Reflection_Capture_Shape = .NONE;
     reflection_capture_influence_radius: float32 = 30.0; // glTF metres
     reflection_capture_brightness: float32 = 1.0;
@@ -320,7 +333,7 @@ Gltf_Light :: struct {
     outer_cone_angle64 : float64 = 0.78539816339;
 }
 
-// A hierarchical tree of nodes
+// a hierarchical tree of nodes
 Gltf_Scene :: struct {
     name  : string;
     root_nodes : [..] int; // index into all_nodes
@@ -466,10 +479,10 @@ Gltf_Animation :: struct {
 
 // loading
 
-GLB_MAGIC :: cast(u32) 0x46546c67; // ASCII "glTF", little-endian.
+GLB_MAGIC :: cast(u32) 0x46546c67; // ascii "glTF", little-endian.
 GLB_VERSION_2 :: cast(u32) 2;
-GLB_CHUNK_JSON :: cast(u32) 0x4e4f534a; // ASCII "JSON", little-endian.
-GLB_CHUNK_BIN :: cast(u32) 0x004e4942;  // ASCII "BIN\0", little-endian.
+GLB_CHUNK_JSON :: cast(u32) 0x4e4f534a; // ascii "JSON", little-endian.
+GLB_CHUNK_BIN :: cast(u32) 0x004e4942;  // ascii "BIN\0", little-endian.
 
 Gltf_Glb_Unpacked :: struct {
     json: string;
@@ -553,9 +566,11 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
     normalize_slashes(normalized_gltf_path);
 
-    // Parsing only needs the source bytes for this call.  Acquire an owned
-    // copy even when the asset backend is used, then release it after the GLB
-    // chunks and external buffers have been copied into Gltf_Data.
+    /*
+    parsing only needs the source bytes for this call.  Acquire an owned
+    copy even when the asset backend is used, then release it after the GLB
+    chunks and external buffers have been copied into Gltf_Data.
+    */
     success, file_contents := load_gltf_file_copy(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
     defer if file_contents.count > 0 free(file_contents);
@@ -655,7 +670,7 @@ read_gltf_skin_weights :: (
 ) {
     if prim.joints_accessors.count == 0 || prim.weights_accessors.count == 0 return;
 
-    // Read JOINTS_0 and WEIGHTS_0 (we support the first set for now)
+    // read JOINTS_0 and WEIGHTS_0 (we support the first set for now)
     joints_accessor := prim.joints_accessors[0];
     weights_accessor := prim.weights_accessors[0];
 
@@ -678,9 +693,11 @@ read_gltf_skin_weights :: (
 
 #scope_file
 
-// helper to read a number from a bare json_value (e.g. an array element).
-// the library's typed getters like json_get_number() work on object+key pairs,
-// so for raw values from json_array_get() we access .number directly.
+/*
+helper to read a number from a bare json_value (e.g. an array element).
+the library's typed getters like json_get_number() work on object+key pairs,
+so for raw values from json_array_get() we access .number directly.
+*/
 json_value_as_float :: (val: *Json_Value) -> float {
     if val == null return 0;
     return cast(float) val.number;
@@ -699,8 +716,10 @@ hex_value :: (c: u8) -> int, bool {
     return 0, false;
 }
 
-// https://www.rfc-editor.org/info/rfc3986/#section-2.1
-// turns % hex hex into a numerical value
+/*
+https://www.rfc-editor.org/info/rfc3986/#section-2.1
+turns % hex hex into a numerical value
+*/
 decode_uri_path :: (uri: string) -> string {
     decoded := alloc_string(uri.count);
     out_count := 0;
@@ -880,15 +899,17 @@ parse_meshes :: (gltf: *Gltf_Data, root: *Json_Value) {
                         tc_name := tprint("TEXCOORD_%", tc_index);
                         tc_val := json_get(attrs, tc_name);
                         if tc_val && json_is_number(tc_val) {
-                            // Ensure the array is large enough — fill gaps with -1
+                            // ensure the array is large enough — fill gaps with -1
                             while prim.texcoord_accessors.count <= tc_index {
                                 array_add(*prim.texcoord_accessors, -1);
                             }
                             prim.texcoord_accessors[tc_index] = json_get_int(attrs, tc_name);
                         } else {
-                            // Stop scanning if there's a gap (conservative) — or continue to allow sparse.
-                            // glTF spec says TEXCOORD sets should be contiguous starting from 0,
-                            // but we'll be lenient and keep scanning.
+                            /*
+                            stop scanning if there's a gap (conservative) — or continue to allow sparse.
+                            glTF spec says TEXCOORD sets should be contiguous starting from 0,
+                            but we'll be lenient and keep scanning.
+                            */
                         }
                     }
 
@@ -944,7 +965,7 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         mat: Gltf_Material;
         mat.name = copy_string(json_get_string(mat_json, "name"));
 
-        // PBR metallic roughness
+        // pbr metallic roughness
         pbr := json_get_object(mat_json, "pbrMetallicRoughness");
         if pbr {
             mat.uses_metallic_roughness = true;
@@ -973,6 +994,7 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
             mat.normal_texture.texture_index = json_get_int(nt, "index", -1);
             mat.normal_texture.texcoord      = json_get_int(nt, "texCoord");
             mat.normal_texture.scale         = cast(float) json_get_number(nt, "scale", 1.0);
+            parse_texture_transform(nt, *mat.normal_texture.texcoord, *mat.normal_texture.transform);
         }
 
         // occlusion texture
@@ -981,6 +1003,7 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
             mat.occlusion_texture.texture_index = json_get_int(ot, "index", -1);
             mat.occlusion_texture.texcoord      = json_get_int(ot, "texCoord");
             mat.occlusion_texture.strength      = cast(float) json_get_number(ot, "strength", 1.0);
+            parse_texture_transform(ot, *mat.occlusion_texture.texcoord, *mat.occlusion_texture.transform);
         }
 
         // emissive texture
@@ -1037,8 +1060,10 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
                     mat.specular_glossiness.specular_glossiness_texture = parse_texture_info(specular_glossiness_texture);
                 }
 
-                // Compatibility path for code that only understands metallic-roughness.
-                // Specular-glossiness is handled directly by the Blinn-Phong testbed path.
+                /*
+                compatibility path for code that only understands metallic-roughness.
+                Specular-glossiness is handled directly by the Blinn-Phong testbed path.
+                */
                 mat.pbr_metallic_roughness.metallic_factor = 0.0;
                 mat.pbr_metallic_roughness.roughness_factor = min(max(1.0 - glossiness, 0.04), 1.0);
             }
@@ -1071,11 +1096,39 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
     }
 }
 
+parse_texture_transform :: (
+    json: *Json_Value,
+    texcoord: *int,
+    transform: *Gltf_Texture_Transform,
+) {
+    extensions := json_get_object(json, "extensions");
+    if extensions == null return;
+
+    texture_transform := json_get_object(extensions, "KHR_texture_transform");
+    if texture_transform == null return;
+
+    offset := json_get_array(texture_transform, "offset");
+    if offset && json_array_count(offset) >= 2 {
+        transform.offset.x = json_value_as_float(json_array_get(offset, 0));
+        transform.offset.y = json_value_as_float(json_array_get(offset, 1));
+    }
+
+    scale := json_get_array(texture_transform, "scale");
+    if scale && json_array_count(scale) >= 2 {
+        transform.scale.x = json_value_as_float(json_array_get(scale, 0));
+        transform.scale.y = json_value_as_float(json_array_get(scale, 1));
+    }
+
+    transform.rotation = cast(float) json_get_number(texture_transform, "rotation", 0.0);
+    texcoord.* = json_get_int(texture_transform, "texCoord", texcoord.*);
+}
+
 parse_texture_info :: (json: *Json_Value) -> Gltf_Texture_Info {
     info: Gltf_Texture_Info;
     if json == null || !json_is_object(json) return info;
     info.texture_index = json_get_int(json, "index", -1);
     info.texcoord      = json_get_int(json, "texCoord");
+    parse_texture_transform(json, *info.texcoord, *info.transform);
     return info;
 }
 
@@ -1415,8 +1468,10 @@ load_buffer_data :: (gltf: *Gltf_Data) {
 
 // data access helpers
 
-// these let you pull actual vertex data out of the binary buffers
-// using the accessor/bufferview indirection that gltf uses.
+/*
+these let you pull actual vertex data out of the binary buffers
+using the accessor/bufferview indirection that gltf uses.
+*/
 
 get_accessor_data_pointer :: (gltf: *Gltf_Data, accessor_index: int) -> *u8, int {
     if accessor_index < 0 || accessor_index >= gltf.all_accessors.count return null, 0;
@@ -1492,9 +1547,11 @@ read_accessor_as_vector3_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..
     return result;
 }
 
-// glTF COLOR_0 may be FLOAT, normalized UNSIGNED_BYTE, or normalized
-// UNSIGNED_SHORT, and may include an alpha component. The color renderers use
-// RGB, so alpha is deliberately ignored here.
+/*
+glTF COLOR_0 may be FLOAT, normalized UNSIGNED_BYTE, or normalized
+UNSIGNED_SHORT, and may include an alpha component. The color renderers use
+RGB, so alpha is deliberately ignored here.
+*/
 read_accessor_as_color3_array :: (gltf: *Gltf_Data, accessor_index: int) -> [..] Vector3 {
     result: [..] Vector3;
     if accessor_index < 0 || accessor_index >= gltf.all_accessors.count return result;
@@ -1757,10 +1814,12 @@ gltf_node_local_transform :: (node: *Gltf_Node) -> Matrix4 {
     return translation_matrix * rotation_matrix(Matrix4, node.rotation) * scale_matrix;
 }
 
-// The returned arrays are indexed by glTF node index. Transforms are valid
-// only where has_world_transform is true. Note that the reason why this can be false
-// is that some nodes are part of different scenes, and our array has indices over 
-// the entire list of nodes.
+/*
+the returned arrays are indexed by glTF node index. Transforms are valid
+only where has_world_transform is true. Note that the reason why this can be false
+is that some nodes are part of different scenes, and our array has indices over
+the entire list of nodes.
+*/
 get_gltf_world_transforms_for_scene :: (
     gltf: *Gltf_Data,
     scene: *Gltf_Scene
@@ -1861,16 +1920,20 @@ get_texcoord_accessor :: (prim: *Gltf_Primitive, channel: int) -> int {
     return prim.texcoord_accessors[channel];
 }
 
-// reads uv data for a specific channel from a primitive.
-// this is the primary way to get texture coordinates when you have multi-channel uvs.
+/*
+reads uv data for a specific channel from a primitive.
+this is the primary way to get texture coordinates when you have multi-channel uvs.
+*/
 read_primitive_texcoords :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, channel: int = 0) -> [..] Vector2 {
     accessor_index := get_texcoord_accessor(prim, channel);
     return read_accessor_as_vector2_array(gltf, accessor_index);
 }
 
-// given a texture info (which contains a texcoord channel index), reads the
-// appropriate uv channel from the primitive. this is useful when rendering:
-// each texture reference in a material specifies which uv channel it wants.
+/*
+given a texture info (which contains a texcoord channel index), reads the
+appropriate uv channel from the primitive. this is useful when rendering:
+each texture reference in a material specifies which uv channel it wants.
+*/
 read_texcoords_for_texture_info :: (gltf: *Gltf_Data, prim: *Gltf_Primitive, tex_info: Gltf_Texture_Info) -> [..] Vector2 {
     return read_primitive_texcoords(gltf, prim, tex_info.texcoord);
 }
