@@ -562,22 +562,76 @@ unpack_glb_file_contents :: (file_contents: string) -> Gltf_Glb_Unpacked {
     return result;
 }
 
+GLTF_LOAD_STEP_COUNT :: 17;
+
+Gltf_Load_Stage :: enum {
+    READ_FILE;
+    UNPACK_CONTAINER;
+    PARSE_JSON;
+    PARSE_BUFFERS;
+    PARSE_BUFFER_VIEWS;
+    PARSE_ACCESSORS;
+    PARSE_IMAGES;
+    PARSE_SAMPLERS;
+    PARSE_TEXTURES;
+    PARSE_MATERIALS;
+    PARSE_LIGHTS;
+    PARSE_MESHES;
+    PARSE_NODES;
+    PARSE_SKINS;
+    PARSE_ANIMATIONS;
+    PARSE_SCENES;
+    LOAD_BUFFER_DATA;
+    COMPLETE;
+}
+
+Gltf_Load_Progress_Proc :: #type (
+    stage: Gltf_Load_Stage,
+    completed_steps: int,
+    total_steps: int,
+    user_data: *void,
+);
+
+gltf_report_load_progress :: inline (
+    callback: Gltf_Load_Progress_Proc,
+    user_data: *void,
+    stage: Gltf_Load_Stage,
+    completed_steps: int,
+) {
+    if callback != null {
+        callback(stage, completed_steps, GLTF_LOAD_STEP_COUNT, user_data);
+    }
+}
+
 load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
+    return load_gltf_with_progress(path_to_gltf_file, null, null);
+}
+
+load_gltf_with_progress :: (
+    path_to_gltf_file: string,
+    progress_callback: Gltf_Load_Progress_Proc,
+    progress_context: *void,
+) -> Gltf_Data {
     normalized_gltf_path := copy_temporary_string(path_to_gltf_file);
     normalize_slashes(normalized_gltf_path);
+    completed_steps := 0;
 
     /*
     parsing only needs the source bytes for this call.  Acquire an owned
     copy even when the asset backend is used, then release it after the GLB
     chunks and external buffers have been copied into Gltf_Data.
     */
+    gltf_report_load_progress(progress_callback, progress_context, .READ_FILE, completed_steps);
     success, file_contents := load_gltf_file_copy(normalized_gltf_path);
     assert(success, "couldn't open the gltf file");
     defer if file_contents.count > 0 free(file_contents);
+    completed_steps += 1;
 
+    gltf_report_load_progress(progress_callback, progress_context, .UNPACK_CONTAINER, completed_steps);
     unpacked := unpack_glb_file_contents(file_contents);
     defer deinit(*unpacked);
     json_contents := ifx unpacked.is_glb then unpacked.json else file_contents;
+    completed_steps += 1;
 
     gltf_data: Gltf_Data;
     gltf_data.path = copy_string(normalized_gltf_path);
@@ -594,28 +648,56 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     }
 
     // parse the JSON using the json library
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_JSON, completed_steps);
     parse_result := json_parse_with_result(json_contents);
     assert(parse_result.success, "couldn't parse glTF JSON: %", parse_result.error.message);
     root := parse_result.value;
     defer json_free(root);
+    completed_steps += 1;
 
     asset_json := json_get_object(root, "asset");
     if asset_json gltf_data.generator = copy_string(json_get_string(asset_json, "generator"));
 
     // parse each top-level section
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_BUFFERS, completed_steps);
     parse_buffers(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_BUFFER_VIEWS, completed_steps);
     parse_buffer_views(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_ACCESSORS, completed_steps);
     parse_accessors(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_IMAGES, completed_steps);
     parse_images(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_SAMPLERS, completed_steps);
     parse_samplers(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_TEXTURES, completed_steps);
     parse_textures(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_MATERIALS, completed_steps);
     parse_materials(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_LIGHTS, completed_steps);
     parse_lights(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_MESHES, completed_steps);
     parse_meshes(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_NODES, completed_steps);
     parse_nodes(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_SKINS, completed_steps);
     parse_skins(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_ANIMATIONS, completed_steps);
     parse_animations(*gltf_data, root);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .PARSE_SCENES, completed_steps);
     parse_scenes(*gltf_data, root);
+    completed_steps += 1;
 
     // default scene
     scene_val := json_get(root, "scene");
@@ -627,7 +709,10 @@ load_gltf :: (path_to_gltf_file: string) -> Gltf_Data {
     if unpacked.is_glb && unpacked.bin.count > 0 && gltf_data.all_buffers.count > 0 {
         gltf_data.all_buffers[0].loaded_data = copy_string(unpacked.bin);
     }
+    gltf_report_load_progress(progress_callback, progress_context, .LOAD_BUFFER_DATA, completed_steps);
     load_buffer_data(*gltf_data);
+    completed_steps += 1;
+    gltf_report_load_progress(progress_callback, progress_context, .COMPLETE, completed_steps);
 
     return gltf_data;
 }
