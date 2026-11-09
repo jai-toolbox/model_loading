@@ -7,3 +7,4 @@
 #load "map.jai";
 #load "wavefront.jai";
 #load "gltf.jai";
+#load "surface_material.jai";
