@@ -230,6 +230,8 @@ but it also allows you do do glass and other things too.
 */ 
 Gltf_Material :: struct {
     name : string;
+    surface_type: Surface_Type;
+    receives_decals: bool = true;
 
     // classic pbr:
     pbr_metallic_roughness : Gltf_Pbr_Metallic_Roughness;
@@ -1049,6 +1051,15 @@ parse_materials :: (gltf: *Gltf_Data, root: *Json_Value) {
         mat_json := json_array_get(arr, i);
         mat: Gltf_Material;
         mat.name = copy_string(json_get_string(mat_json, "name"));
+        // Blender custom material properties are exported as glTF extras.
+        // Explicit classification wins; old maps retain a name-based fallback.
+        mat.surface_type = surface_type_from_name(mat.name);
+        extras := json_get_object(mat_json, "extras");
+        if extras {
+            surface_name := json_get_string(extras, "surface_type", "");
+            if surface_name.count > 0 mat.surface_type = surface_type_from_name(surface_name);
+            mat.receives_decals = json_get_bool(extras, "receives_decals", true);
+        }
 
         // pbr metallic roughness
         pbr := json_get_object(mat_json, "pbrMetallicRoughness");
