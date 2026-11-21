@@ -1,8 +1,9 @@
 /*
-Effect textures need HDR color and opacity in an ordinary image file. These
-procedures read and write uncompressed scanline OpenEXR images with float
-R/G/B/A channels. Other OpenEXR compression and channel types are rejected.
-The byte-writing code follows the existing RGB writer in tbx/sky.
+OpenEXR is an image format supporting floating-point channels for HDR images.
+This module reads and writes uncompressed scanline files with 32-bit float
+R/G/B/A channels, preserving Float32_RGBA_Image pixel values without applying
+exposure, tone mapping, or display encoding. Other compression and channel
+types are rejected.
 */
 #scope_module
 #import "Basic";
@@ -10,12 +11,12 @@ The byte-writing code follows the existing RGB writer in tbx/sky.
 #import "File";
 #scope_export
 
-Float_Image :: struct {
+Float32_RGBA_Image :: struct {
     width, height: s32;
     pixels: [..] Vector4;
 }
 
-free_float_image :: (image: *Float_Image) {
+free_float_image :: (image: *Float32_RGBA_Image) {
     array_free(image.pixels);
     image.* = .{};
 }
@@ -74,7 +75,7 @@ write_open_exr :: (path: string, width: s32, height: s32, pixels: [] Vector4, fl
     return true;
 }
 
-read_open_exr :: (path: string, maximum_bytes: s64 = 2*1024*1024*1024, flip_vertical: bool = false) -> (Float_Image, bool) {
+read_open_exr :: (path: string, maximum_bytes: s64 = 2*1024*1024*1024, flip_vertical: bool = false) -> (Float32_RGBA_Image, bool) {
     data, ok := read_entire_file(path);
     if !ok return .{}, false;
     defer free(data);
@@ -125,7 +126,7 @@ read_open_exr :: (path: string, maximum_bytes: s64 = 2*1024*1024*1024, flip_vert
     bytes := cast(s64) width*height*16;
     if bytes <= 0 || maximum_bytes <= 0 || bytes > maximum_bytes || cursor+cast(s64) height*8 > data.count return .{}, false;
     if bytes+cast(s64) height*16 > data.count-cursor return .{}, false;
-    image: Float_Image;
+    image: Float32_RGBA_Image;
     image.width = width; image.height = height;
     array_resize(*image.pixels, cast(s64) width*height);
     success := false;
