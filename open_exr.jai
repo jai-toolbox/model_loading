@@ -5,11 +5,9 @@ R/G/B/A channels, preserving Float32_RGBA_Image pixel values without applying
 exposure, tone mapping, or display encoding. Other compression and channel
 types are rejected.
 */
-#scope_module
 #import "Basic";
 #import "Math";
 #import "File";
-#scope_export
 
 Float32_RGBA_Image :: struct {
     width, height: s32;
