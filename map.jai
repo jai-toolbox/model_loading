@@ -49,14 +49,14 @@ Brush_Collision_Result :: struct {
 
 
 Coordinate_System :: enum {
-    Y_UP;    // opengl, blender default
-    Z_UP;    // quake/source engine, 3ds max
+    Y_UP;    // Explicit legacy target: swaps Y/Z and reflects handedness.
+    Z_UP;    // Engine world default; Quake/Source maps already use Z-up.
 }
 
 Parser :: struct {
     data: string;
     pos: int;
-    target_coords: Coordinate_System;
+    target_coords: Coordinate_System = .Z_UP;
     scale: float;  
 }
 
@@ -70,7 +70,7 @@ convert_coords :: (v: Vector3, target: Coordinate_System) -> Vector3 {
     }
 }
 
-parse_map :: (content: string, target_coords: Coordinate_System = .Y_UP, scale :float = 1) -> Map, bool {
+parse_map :: (content: string, target_coords: Coordinate_System = .Z_UP, scale :float = 1) -> Map, bool {
     map: Map;
     parser := Parser.{ data = content, pos = 0, target_coords = target_coords, scale = scale};
     
@@ -354,20 +354,19 @@ cylinder_plane_distance :: (player: *Player, plane: *Plane) -> float {
     
     closest_point := player.position;
     
-    // For the horizontal component (XZ plane)
-    horizontal_normal := Vector3.{ normal.x, 0, normal.z };
+    // Horizontal support in the plane perpendicular to world up.
+    horizontal_normal := project_onto_plane(normal, WORLD_UP);
     horizontal_length := length(horizontal_normal);
     
     if horizontal_length > EPSILON__ {
-        closest_point.x -= (horizontal_normal.x / horizontal_length) * player.radius;
-        closest_point.z -= (horizontal_normal.z / horizontal_length) * player.radius;
+        closest_point -= (horizontal_normal / horizontal_length) * player.radius;
     }
     
     // for the vertical component
-    if normal.y > 0 {
-        closest_point.y -= player.height / 2.0;
-    } else if normal.y < 0 {
-        closest_point.y += player.height / 2.0;
+    if project(normal, WORLD_UP) > 0 {
+        closest_point -= WORLD_UP * (player.height / 2.0);
+    } else if project(normal, WORLD_UP) < 0 {
+        closest_point += WORLD_UP * (player.height / 2.0);
     }
     
     return dot(normal, closest_point) - plane.d;
@@ -439,7 +438,7 @@ is_on_ground :: (player: *Player, map: *Map) -> bool {
     for * entity : map.entities {
         for * brush : entity.brushes {
             for * plane : brush.planes {
-                if plane.normal.y > SLOPE_THRESHOLD {
+                if project(plane.normal, WORLD_UP) > SLOPE_THRESHOLD {
                     dist := cylinder_plane_distance(player, plane);
                     if dist > -GROUND_THRESHOLD && dist < GROUND_THRESHOLD {
                         return true;
@@ -460,17 +459,17 @@ Polygon :: struct {
 
 WORLD_BOUNDS :: 4096.0; // I read online that this is how they create meshes from brushes.
 
-make_huge_polygon_for_plane :: (plane: Plane) -> Polygon { // assumes y up coordinate system.
+make_huge_polygon_for_plane :: (plane: Plane) -> Polygon {
     // create a huge polygon on this plane
     // first, find a basis for the plane
     
     poly: Polygon;
     
     up: Vector3;
-    if abs(plane.normal.y) < 0.9 {  
-        up = .{ 0, 1, 0 };  // Was { 0, 0, 1 }
+    if abs(project(plane.normal, WORLD_UP)) < 0.9 {
+        up = WORLD_UP;
     } else {
-        up = .{ 1, 0, 0 };
+        up = WORLD_FORWARD;
     }
     
     right := unit_vector(cross(up, plane.normal));
